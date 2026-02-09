@@ -1,0 +1,115 @@
+# Template: Gitleaks - Secret Detection
+# Scans for hardcoded secrets, passwords, API keys
+
+parameters:
+  - name: failOnSecrets
+    type: boolean
+    default: true
+
+  - name: configFile
+    type: string
+    default: '.gitleaks.toml'
+
+steps:
+  # Install Gitleaks
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "📦 Installing Gitleaks..."
+
+      # Download latest Gitleaks
+      GITLEAKS_VERSION="8.18.2"
+      wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+
+      # Extract
+      tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+      chmod +x gitleaks
+
+      # Move to PATH
+      sudo mv gitleaks /usr/local/bin/
+
+      # Verify installation
+      gitleaks version
+
+      echo "✅ Gitleaks installed successfully"
+    displayName: 'Install Gitleaks'
+
+  # Scan repository for secrets
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "🔍 Scanning for secrets with Gitleaks..."
+
+      # Run Gitleaks scan
+      if [ -f "${{ parameters.configFile }}" ]; then
+        echo "Using config file: ${{ parameters.configFile }}"
+        gitleaks detect \
+          --source="." \
+          --config="${{ parameters.configFile }}" \
+          --report-path="$(Build.ArtifactStagingDirectory)/gitleaks-report.json" \
+          --report-format="json" \
+          --verbose \
+          --no-git
+      else
+        echo "Using default Gitleaks config"
+        gitleaks detect \
+          --source="." \
+          --report-path="$(Build.ArtifactStagingDirectory)/gitleaks-report.json" \
+          --report-format="json" \
+          --verbose \
+          --no-git
+      fi
+
+      EXIT_CODE=$?
+
+      if [ $EXIT_CODE -eq 0 ]; then
+        echo "✅ No secrets detected!"
+      else
+        echo "❌ Secrets detected! Check the report."
+        cat "$(Build.ArtifactStagingDirectory)/gitleaks-report.json"
+
+        if [ "${{ parameters.failOnSecrets }}" = "True" ]; then
+          echo "🚫 Failing build due to detected secrets (HDS compliance)"
+          exit 1
+        else
+          echo "⚠️ Secrets detected but continuing (failOnSecrets=false)"
+          exit 0
+        fi
+      fi
+    displayName: 'Scan for Secrets'
+    continueOnError: ${{ not(parameters.failOnSecrets) }}
+
+  # Publish Gitleaks report
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Gitleaks Report'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/gitleaks-report.json'
+      ArtifactName: 'SecurityReports'
+      publishLocation: 'Container'
+
+  # Parse and display results
+  - script: |
+      #!/bin/bash
+
+      REPORT_FILE="$(Build.ArtifactStagingDirectory)/gitleaks-report.json"
+
+      if [ -f "$REPORT_FILE" ]; then
+        # Count secrets found
+        SECRET_COUNT=$(jq '. | length' "$REPORT_FILE" 2>/dev/null || echo "0")
+
+        echo "📊 Gitleaks Summary:"
+        echo "  - Secrets found: $SECRET_COUNT"
+
+        if [ "$SECRET_COUNT" -gt 0 ]; then
+          echo ""
+          echo "⚠️ Detected secrets:"
+          jq -r '.[] | "  - File: \(.File) (Line \(.StartLine)): \(.Description)"' "$REPORT_FILE" 2>/dev/null || echo "  (Failed to parse report)"
+        fi
+      else
+        echo "✅ No report generated (no secrets found)"
+      fi
+    displayName: 'Display Gitleaks Results'
+    condition: always()

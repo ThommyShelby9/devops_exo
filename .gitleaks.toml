@@ -1,0 +1,168 @@
+# Gitleaks Configuration for MedSecure
+# Custom rules and allowlist for healthcare platform
+
+title = "MedSecure Security Configuration"
+
+[allowlist]
+description = "Allowlist for false positives"
+regexes = [
+    # Example connection strings (non-production)
+    '''Server=\(localdb\)''',
+    '''localhost''',
+
+    # Test data and examples
+    '''example\.com''',
+    '''test@test\.com''',
+    '''EXAMPLE_''',
+    '''YOUR_.*_HERE''',
+
+    # Common false positives in .NET
+    '''appsettings\.json''',
+    '''Data Source=''',
+]
+
+paths = [
+    # Exclude test files
+    '''(.*?)(test|spec)\.cs$''',
+    '''tests/''',
+
+    # Exclude documentation
+    '''docs/''',
+    '''README\.md''',
+    '''\.md$''',
+
+    # Exclude migrations
+    '''Migrations/''',
+
+    # Exclude generated files
+    '''node_modules/''',
+    '''bin/''',
+    '''obj/''',
+    '''packages/''',
+]
+
+# Custom rules for healthcare data
+[[rules]]
+id = "patient-data-key"
+description = "Patient Data Encryption Key"
+regex = '''(?i)(patient[_-]?data[_-]?key|pdk)[_-]?[:=]\s*['"'][a-zA-Z0-9+/=]{32,}['"]'''
+tags = ["healthcare", "encryption", "hds"]
+
+[[rules]]
+id = "fhir-api-key"
+description = "FHIR API Key"
+regex = '''(?i)(fhir[_-]?api[_-]?key|fhir[_-]?token)[_-]?[:=]\s*['"'][a-zA-Z0-9+/=]{20,}['"]'''
+tags = ["healthcare", "api", "fhir"]
+
+[[rules]]
+id = "azure-storage-key"
+description = "Azure Storage Account Key"
+regex = '''(?i)(azure[_-]?storage[_-]?key|storage[_-]?account[_-]?key)[_-]?[:=]\s*['"'][a-zA-Z0-9+/=]{88}['"]'''
+tags = ["azure", "storage"]
+
+[[rules]]
+id = "sql-connection-string"
+description = "SQL Server Connection String with Password"
+regex = '''(?i)Server\s*=.*Password\s*=\s*[^;]{8,}'''
+tags = ["database", "sql", "connection-string"]
+
+[[rules]]
+id = "jwt-secret"
+description = "JWT Secret Key"
+regex = '''(?i)(jwt[_-]?secret|jwt[_-]?key)[_-]?[:=]\s*['"'][a-zA-Z0-9+/=_-]{32,}['"]'''
+tags = ["authentication", "jwt"]
+
+# HDS Compliance - Specific rules for French healthcare
+[[rules]]
+id = "ins-patient-identifier"
+description = "INS (Identifiant National de Santé) - French Healthcare ID"
+regex = '''(?i)(ins[_-]?number|ins[_-]?id|identifiant[_-]?national)[_-]?[:=]\s*['"']?\d{15}['"]?'''
+tags = ["hds", "rgpd", "healthcare", "france"]
+
+[[rules]]
+id = "finessNumber"
+description = "FINESS Number (French Healthcare Facility Identifier)"
+regex = '''(?i)(finess[_-]?number|finess[_-]?id)[_-]?[:=]\s*['"']?\d{9}['"]?'''
+tags = ["hds", "healthcare", "france"]
+
+# Azure-specific rules
+[[rules]]
+id = "azure-subscription-id"
+description = "Azure Subscription ID"
+regex = '''[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'''
+tags = ["azure", "subscription"]
+[rules.allowlist]
+regexes = [
+    '''00000000-0000-0000-0000-000000000000''',  # Null GUID
+    '''11111111-1111-1111-1111-111111111111''',  # Test GUID
+]
+
+[[rules]]
+id = "azure-tenant-id"
+description = "Azure Tenant ID"
+regex = '''(?i)(tenant[_-]?id|azure[_-]?tenant)[_-]?[:=]\s*['"'][a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}['"]'''
+tags = ["azure", "tenant"]
+
+# Generic secret detection (catch-all)
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|apikey)[_-]?[:=]\s*['"'][a-zA-Z0-9]{20,}['"]'''
+tags = ["api", "key"]
+
+[[rules]]
+id = "private-key"
+description = "Private Key"
+regex = '''-----BEGIN (RSA |EC )?PRIVATE KEY-----'''
+tags = ["key", "private"]
+
+[[rules]]
+id = "aws-access-key"
+description = "AWS Access Key"
+regex = '''(?i)(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+tags = ["aws", "key"]
+
+[[rules]]
+id = "github-token"
+description = "GitHub Token"
+regex = '''gh[pousr]_[A-Za-z0-9_]{36,}'''
+tags = ["github", "token"]
+
+[[rules]]
+id = "slack-token"
+description = "Slack Token"
+regex = '''xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,32}'''
+tags = ["slack", "token"]
+
+[[rules]]
+id = "stripe-api-key"
+description = "Stripe API Key"
+regex = '''(?i)sk_live_[a-zA-Z0-9]{24,}'''
+tags = ["stripe", "payment"]
+
+[[rules]]
+id = "mailgun-api-key"
+description = "Mailgun API Key"
+regex = '''(?i)key-[a-zA-Z0-9]{32}'''
+tags = ["mailgun", "api"]
+
+[[rules]]
+id = "twilio-api-key"
+description = "Twilio API Key"
+regex = '''SK[a-z0-9]{32}'''
+tags = ["twilio", "api"]
+
+# Entropy-based detection for high-entropy strings
+[[rules]]
+id = "high-entropy-string"
+description = "High Entropy String (potential secret)"
+regex = '''['"'][a-zA-Z0-9+/=_-]{40,}['"]'''
+entropy = 4.5
+tags = ["entropy", "secret"]
+[rules.allowlist]
+regexes = [
+    # Exclude common base64-encoded images
+    '''data:image''',
+    # Exclude public keys
+    '''-----BEGIN PUBLIC KEY-----''',
+]

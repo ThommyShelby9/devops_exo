@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!--
+        OWASP Dependency Check Suppressions
+        MedSecure - Healthcare Platform
+
+        This file contains known false positives and accepted risks.
+        Each suppression should be documented with:
+        - Reason for suppression
+        - Date of review
+        - Reviewer name
+        - Expiration date (if applicable)
+    -->
+
+    <!-- Example: Microsoft.AspNetCore false positives -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            CVE-XXXX-XXXX is a false positive for Microsoft.AspNetCore.* packages
+            This vulnerability only affects versions < 6.0, but we're using 8.0
+            Reviewed: 2024-01-15 by Security Team
+            Expires: 2024-07-15
+        ]]></notes>
+        <packageUrl regex="true">^pkg:nuget/Microsoft\.AspNetCore\..*$</packageUrl>
+        <cve>CVE-XXXX-XXXX</cve>
+    </suppress>
+    -->
+
+    <!-- Example: Suppress low-severity vulnerabilities in dev-only dependencies -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            Suppressing low-severity vulnerabilities in test dependencies
+            These packages are not deployed to production
+            Reviewed: 2024-01-15 by Security Team
+        ]]></notes>
+        <packageUrl regex="true">^pkg:nuget/(xunit|Moq|FluentAssertions).*$</packageUrl>
+        <cvssBelow>4.0</cvssBelow>
+    </suppress>
+    -->
+
+    <!-- Example: Suppress based on file path (only affects specific projects) -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            This vulnerability only affects the test project
+            Production code does not use this dependency
+            Reviewed: 2024-01-15
+        ]]></notes>
+        <filePath regex="true">.*[\\/]tests[\\/].*</filePath>
+        <cve>CVE-XXXX-XXXX</cve>
+    </suppress>
+    -->
+
+    <!-- Example: Suppress specific GAV (Group, Artifact, Version) -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            Known issue with version detection for System.Text.Json
+            Actual version in use is patched
+            Reviewed: 2024-01-15
+        ]]></notes>
+        <gav regex="true">^System\.Text\.Json:.*$</gav>
+        <cve>CVE-XXXX-XXXX</cve>
+    </suppress>
+    -->
+
+    <!-- HDS Compliance Notes -->
+    <!--
+        For HDS compliance, all suppressions must be:
+        1. Documented with clear justification
+        2. Reviewed by security team
+        3. Have an expiration date (max 6 months)
+        4. Re-evaluated at each expiration
+
+        Critical and High severity vulnerabilities should NOT be suppressed
+        unless there is a documented risk acceptance from management.
+    -->
+
+    <!-- Temporary suppressions during migration or upgrades -->
+    <!--
+    <suppress until="2024-06-30">
+        <notes><![CDATA[
+            Temporary suppression during .NET 8 migration
+            Will be resolved with upgrade to package version X.Y.Z
+            Tracked in: JIRA-1234
+            Reviewed: 2024-01-15
+        ]]></notes>
+        <packageUrl regex="true">^pkg:nuget/OldPackage.*$</packageUrl>
+        <cve>CVE-XXXX-XXXX</cve>
+    </suppress>
+    -->
+
+    <!-- Example: CPE (Common Platform Enumeration) false match -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            False positive: OWASP is matching against wrong CPE
+            Our package is different from the vulnerable one
+            Reviewed: 2024-01-15
+        ]]></notes>
+        <cpe>cpe:/a:vendor:product:version</cpe>
+        <cve>CVE-XXXX-XXXX</cve>
+    </suppress>
+    -->
+
+    <!-- Example: Suppress all vulnerabilities below a certain CVSS score -->
+    <!--
+    <suppress>
+        <notes><![CDATA[
+            Suppressing informational findings (CVSS < 3.0)
+            These do not pose significant risk to HDS compliance
+            Reviewed: 2024-01-15 by Security Team
+        ]]></notes>
+        <cvssBelow>3.0</cvssBelow>
+    </suppress>
+    -->
+
+    <!--
+        IMPORTANT: Do NOT suppress vulnerabilities without proper review!
+
+        For each suppression:
+        1. Create a ticket in your issue tracker
+        2. Document the security review
+        3. Get approval from security team
+        4. Set an expiration date
+        5. Monitor for updates/patches
+    -->
+
+</suppressions>

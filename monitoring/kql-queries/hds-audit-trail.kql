@@ -1,0 +1,279 @@
+// ============================================
+// HDS Audit Trail - KQL Queries
+// MedSecure Platform - Healthcare Data Hosting Compliance
+// ============================================
+
+// ============================================
+// 1. KEY VAULT ACCESS AUDIT
+// ============================================
+// HDS Article 4.1: Traçabilité des accès aux secrets
+
+// All Key Vault operations in the last 90 days
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where TimeGenerated > ago(90d)
+| project TimeGenerated,
+          OperationName,
+          CallerIPAddress,
+          identity_claim_upn_s,  // User Principal Name
+          SecretName = properties_objectName_s,
+          ResultSignature,
+          ResourceId
+| order by TimeGenerated desc
+
+// ============================================
+// 2. SECRET ACCESS BY USER
+// ============================================
+// Track who accessed which secrets
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where OperationName == "SecretGet" or OperationName == "SecretList"
+| where TimeGenerated > ago(30d)
+| summarize
+    AccessCount = count(),
+    FirstAccess = min(TimeGenerated),
+    LastAccess = max(TimeGenerated),
+    SecretsList = make_set(properties_objectName_s)
+    by User = identity_claim_upn_s, CallerIPAddress
+| order by AccessCount desc
+
+// ============================================
+// 3. FAILED KEY VAULT ACCESS ATTEMPTS
+// ============================================
+// HDS Article 7.2: Détection des tentatives d'accès non autorisées
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where ResultSignature != "OK"
+| where TimeGenerated > ago(7d)
+| project TimeGenerated,
+          OperationName,
+          CallerIPAddress,
+          User = identity_claim_upn_s,
+          SecretName = properties_objectName_s,
+          ResultSignature,
+          ResultDescription = properties_ResultDescription_s
+| order by TimeGenerated desc
+
+// ============================================
+// 4. SECRET ROTATION AUDIT
+// ============================================
+// Track secret rotation events (HDS Article 9.1)
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where OperationName == "SecretSet"
+| where TimeGenerated > ago(90d)
+| project TimeGenerated,
+          SecretName = properties_objectName_s,
+          User = identity_claim_upn_s,
+          CallerIPAddress,
+          ResourceId
+| order by TimeGenerated desc
+
+// ============================================
+// 5. APP SERVICE ACCESS LOGS
+// ============================================
+// HDS Article 4.1: Traçabilité des accès aux applications
+
+AppServiceHTTPLogs
+| where TimeGenerated > ago(7d)
+| where ScStatus >= 400  // Errors only
+| project TimeGenerated,
+          CsMethod,
+          CsUriStem,
+          ScStatus,
+          CsUserAgent,
+          CIp,  // Client IP
+          TimeTaken
+| order by TimeGenerated desc
+
+// ============================================
+// 6. SQL DATABASE AUDIT
+// ============================================
+// HDS Article 4.1: Traçabilité des accès aux données de santé
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where TimeGenerated > ago(7d)
+| project TimeGenerated,
+          action_name_s,
+          client_ip_s,
+          database_principal_name_s,  // User
+          object_name_s,  // Table/View
+          statement_s,  // SQL Query
+          succeeded_s
+| order by TimeGenerated desc
+
+// ============================================
+// 7. DATA ACCESS BY USER (SQL)
+// ============================================
+// Track who accessed which tables
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where action_name_s == "SELECT" or action_name_s == "UPDATE" or action_name_s == "DELETE"
+| where TimeGenerated > ago(30d)
+| summarize
+    QueryCount = count(),
+    FirstAccess = min(TimeGenerated),
+    LastAccess = max(TimeGenerated),
+    TablesList = make_set(object_name_s)
+    by User = database_principal_name_s, ClientIP = client_ip_s
+| order by QueryCount desc
+
+// ============================================
+// 8. UNAUTHORIZED DATA ACCESS ATTEMPTS
+// ============================================
+// HDS Article 7.2: Détection des accès non autorisés
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where succeeded_s == "false"
+| where TimeGenerated > ago(7d)
+| project TimeGenerated,
+          action_name_s,
+          database_principal_name_s,
+          client_ip_s,
+          object_name_s,
+          statement_s,
+          additional_information_s
+| order by TimeGenerated desc
+
+// ============================================
+// 9. DEPLOYMENT HISTORY (Blue/Green)
+// ============================================
+// Track all deployments for audit trail
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.WEB"
+| where Category == "AppServiceAuditLogs"
+| where TimeGenerated > ago(90d)
+| where OperationName contains "Swap"
+| project TimeGenerated,
+          OperationName,
+          User = identity_claim_upn_s,
+          CallerIPAddress,
+          ResultSignature,
+          Properties = properties_s
+| order by TimeGenerated desc
+
+// ============================================
+// 10. SECURITY EVENTS TIMELINE
+// ============================================
+// Consolidated view of all security events
+
+union
+    (AzureDiagnostics
+    | where ResourceProvider == "MICROSOFT.KEYVAULT"
+    | where ResultSignature != "OK"
+    | project TimeGenerated, EventType = "KeyVault-Failed", User = identity_claim_upn_s, Detail = OperationName),
+    (AzureDiagnostics
+    | where ResourceProvider == "MICROSOFT.SQL"
+    | where Category == "SQLSecurityAuditEvents"
+    | where succeeded_s == "false"
+    | project TimeGenerated, EventType = "SQL-Failed", User = database_principal_name_s, Detail = action_name_s),
+    (AppServiceHTTPLogs
+    | where ScStatus >= 500
+    | project TimeGenerated, EventType = "AppService-Error", User = CsUserAgent, Detail = strcat(CsMethod, " ", CsUriStem))
+| where TimeGenerated > ago(7d)
+| order by TimeGenerated desc
+
+// ============================================
+// 11. COMPLIANCE REPORT (Daily Summary)
+// ============================================
+// Daily summary for HDS compliance reporting
+
+AzureDiagnostics
+| where TimeGenerated > ago(1d)
+| summarize
+    TotalOperations = count(),
+    FailedOperations = countif(ResultSignature != "OK"),
+    KeyVaultAccess = countif(ResourceProvider == "MICROSOFT.KEYVAULT"),
+    SQLAccess = countif(ResourceProvider == "MICROSOFT.SQL" and Category == "SQLSecurityAuditEvents"),
+    UniqueUsers = dcount(identity_claim_upn_s)
+    by bin(TimeGenerated, 1h)
+| order by TimeGenerated desc
+
+// ============================================
+// 12. RGPD COMPLIANCE - DATA ACCESS TRACKING
+// ============================================
+// RGPD Article 9: Traitement des données de santé
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where object_name_s contains "Patient" or object_name_s contains "MedicalRecord"
+| where TimeGenerated > ago(30d)
+| project TimeGenerated,
+          Action = action_name_s,
+          User = database_principal_name_s,
+          Table = object_name_s,
+          ClientIP = client_ip_s,
+          Query = substring(statement_s, 0, 200)  // First 200 chars
+| order by TimeGenerated desc
+
+// ============================================
+// 13. PRIVILEGED OPERATIONS AUDIT
+// ============================================
+// Track operations by privileged users (Admins)
+
+AzureDiagnostics
+| where identity_claim_upn_s contains "admin" or identity_claim_upn_s contains "root"
+| where TimeGenerated > ago(7d)
+| project TimeGenerated,
+          ResourceProvider,
+          OperationName,
+          User = identity_claim_upn_s,
+          CallerIPAddress,
+          ResultSignature
+| order by TimeGenerated desc
+
+// ============================================
+// 14. SUSPICIOUS ACTIVITY DETECTION
+// ============================================
+// Detect unusual patterns (e.g., multiple failed attempts)
+
+AzureDiagnostics
+| where ResultSignature != "OK"
+| where TimeGenerated > ago(1h)
+| summarize FailedAttempts = count() by CallerIPAddress, User = identity_claim_upn_s, bin(TimeGenerated, 5m)
+| where FailedAttempts > 5  // More than 5 failures in 5 minutes
+| order by FailedAttempts desc
+
+// ============================================
+// 15. EXPORT AUDIT LOG (90 DAYS FOR HDS)
+// ============================================
+// Export complete audit log for HDS compliance archive
+
+AzureDiagnostics
+| where TimeGenerated > ago(90d)
+| where ResourceProvider in ("MICROSOFT.KEYVAULT", "MICROSOFT.SQL", "MICROSOFT.WEB")
+| project TimeGenerated,
+          ResourceProvider,
+          Category,
+          OperationName,
+          User = coalesce(identity_claim_upn_s, database_principal_name_s, "System"),
+          CallerIPAddress = coalesce(CallerIPAddress, client_ip_s, "N/A"),
+          ResultSignature = coalesce(ResultSignature, succeeded_s, "N/A"),
+          ResourceId,
+          Details = coalesce(properties_objectName_s, object_name_s, statement_s, "")
+| order by TimeGenerated desc
+
+// ============================================
+// 16. COST TRACKING FOR HDS AUDIT
+// ============================================
+// Track Log Analytics ingestion costs
+
+Usage
+| where TimeGenerated > ago(30d)
+| where IsBillable == true
+| summarize
+    TotalDataIngested_GB = sum(Quantity) / 1024,
+    EstimatedCost_EUR = sum(Quantity) / 1024 * 2.30  // €2.30 per GB (example rate)
+    by bin(TimeGenerated, 1d), DataType
+| order by TimeGenerated desc

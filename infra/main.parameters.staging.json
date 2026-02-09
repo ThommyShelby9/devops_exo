@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "medsecure-staging"
+    },
+    "location": {
+      "value": "francecentral"
+    },
+    "principalId": {
+      "value": ""
+    },
+    "sqlAdminPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscription-id}/resourceGroups/rg-medsecure-staging/providers/Microsoft.KeyVault/vaults/kv-medsecure-staging"
+        },
+        "secretName": "sqlAdminPassword"
+      }
+    },
+    "appUserPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscription-id}/resourceGroups/rg-medsecure-staging/providers/Microsoft.KeyVault/vaults/kv-medsecure-staging"
+        },
+        "secretName": "appUserPassword"
+      }
+    },
+    "resourceGroupName": {
+      "value": "rg-medsecure-staging"
+    },
+    "webServiceName": {
+      "value": "app-medsecure-web-staging"
+    },
+    "catalogDatabaseName": {
+      "value": "catalogDatabase"
+    },
+    "catalogDatabaseServerName": {
+      "value": "sql-medsecure-catalog-staging"
+    },
+    "identityDatabaseName": {
+      "value": "identityDatabase"
+    },
+    "identityDatabaseServerName": {
+      "value": "sql-medsecure-identity-staging"
+    },
+    "appServicePlanName": {
+      "value": "plan-medsecure-staging"
+    },
+    "keyVaultName": {
+      "value": "kv-medsecure-staging"
+    },
+    "logAnalyticsName": {
+      "value": "log-medsecure-staging"
+    },
+    "applicationInsightsName": {
+      "value": "appi-medsecure-staging"
+    },
+    "containerRegistryName": {
+      "value": "crmedsecurestaging"
+    }
+  }
+}

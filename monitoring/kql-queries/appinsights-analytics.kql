@@ -1,0 +1,474 @@
+// ============================================
+// APPLICATION INSIGHTS - KQL Analytics Queries
+// MedSecure Platform - Performance & Availability Monitoring
+// HDS Article 8.1 - Service Monitoring
+// ============================================
+
+// ============================================
+// PERFORMANCE METRICS
+// ============================================
+
+// 1. Average Response Time (Last 24 hours)
+requests
+| where timestamp > ago(24h)
+| summarize
+    AvgDuration = avg(duration),
+    P50Duration = percentile(duration, 50),
+    P95Duration = percentile(duration, 95),
+    P99Duration = percentile(duration, 99),
+    RequestCount = count()
+    by bin(timestamp, 1h), name
+| order by timestamp desc
+| project
+    Time = timestamp,
+    Operation = name,
+    AvgResponseTime_ms = round(AvgDuration, 2),
+    P50_ms = round(P50Duration, 2),
+    P95_ms = round(P95Duration, 2),
+    P99_ms = round(P99Duration, 2),
+    TotalRequests = RequestCount
+
+// 2. Slowest Requests (Top 20)
+requests
+| where timestamp > ago(24h)
+| top 20 by duration desc
+| project
+    Timestamp = timestamp,
+    Operation = name,
+    URL = url,
+    Duration_ms = duration,
+    ResponseCode = resultCode,
+    Success = success,
+    User = user_AuthenticatedId
+
+// 3. Request Success Rate
+requests
+| where timestamp > ago(24h)
+| summarize
+    TotalRequests = count(),
+    SuccessfulRequests = countif(success == true),
+    FailedRequests = countif(success == false)
+    by bin(timestamp, 1h)
+| extend SuccessRate = round((SuccessfulRequests * 100.0) / TotalRequests, 2)
+| project
+    Time = timestamp,
+    TotalRequests,
+    SuccessfulRequests,
+    FailedRequests,
+    SuccessRate_Percent = SuccessRate
+| order by Time desc
+
+// 4. HTTP Status Code Distribution
+requests
+| where timestamp > ago(24h)
+| summarize RequestCount = count() by resultCode
+| order by RequestCount desc
+| project
+    StatusCode = resultCode,
+    Count = RequestCount,
+    Percentage = round((RequestCount * 100.0) / toscalar(requests | where timestamp > ago(24h) | count()), 2)
+
+// ============================================
+// DEPENDENCY PERFORMANCE
+// ============================================
+
+// 5. Database Query Performance
+dependencies
+| where timestamp > ago(24h)
+| where type == "SQL"
+| summarize
+    AvgDuration = avg(duration),
+    P95Duration = percentile(duration, 95),
+    QueryCount = count(),
+    FailureCount = countif(success == false)
+    by name
+| extend FailureRate = round((FailureCount * 100.0) / QueryCount, 2)
+| order by AvgDuration desc
+| project
+    Query = name,
+    AvgDuration_ms = round(AvgDuration, 2),
+    P95Duration_ms = round(P95Duration, 2),
+    TotalQueries = QueryCount,
+    Failures = FailureCount,
+    FailureRate_Percent = FailureRate
+
+// 6. External API Calls Performance
+dependencies
+| where timestamp > ago(24h)
+| where type == "HTTP"
+| summarize
+    AvgDuration = avg(duration),
+    P95Duration = percentile(duration, 95),
+    CallCount = count(),
+    FailureCount = countif(success == false)
+    by target, name
+| extend FailureRate = round((FailureCount * 100.0) / CallCount, 2)
+| order by AvgDuration desc
+| project
+    ExternalService = target,
+    Endpoint = name,
+    AvgDuration_ms = round(AvgDuration, 2),
+    P95Duration_ms = round(P95Duration, 2),
+    TotalCalls = CallCount,
+    Failures = FailureCount,
+    FailureRate_Percent = FailureRate
+
+// 7. Dependency Failures
+dependencies
+| where timestamp > ago(24h)
+| where success == false
+| summarize
+    FailureCount = count(),
+    UniqueErrors = dcount(resultCode)
+    by target, type, name
+| order by FailureCount desc
+| project
+    DependencyType = type,
+    Target = target,
+    Operation = name,
+    Failures = FailureCount,
+    UniqueErrorCodes = UniqueErrors
+
+// ============================================
+// EXCEPTIONS AND ERRORS
+// ============================================
+
+// 8. Exception Trends
+exceptions
+| where timestamp > ago(24h)
+| summarize ExceptionCount = count() by bin(timestamp, 1h), type
+| order by timestamp desc
+| project
+    Time = timestamp,
+    ExceptionType = type,
+    Count = ExceptionCount
+
+// 9. Top Exceptions
+exceptions
+| where timestamp > ago(24h)
+| summarize
+    Count = count(),
+    SampleMessage = any(outerMessage)
+    by type, method
+| order by Count desc
+| take 20
+| project
+    ExceptionType = type,
+    Method = method,
+    Occurrences = Count,
+    SampleMessage
+
+// 10. Exception Stack Trace
+exceptions
+| where timestamp > ago(24h)
+| project
+    Timestamp = timestamp,
+    ExceptionType = type,
+    Message = outerMessage,
+    StackTrace = details,
+    Operation = operation_Name,
+    User = user_AuthenticatedId
+| order by Timestamp desc
+| take 100
+
+// ============================================
+// AVAILABILITY AND HEALTH
+// ============================================
+
+// 11. Availability Test Results
+availabilityResults
+| where timestamp > ago(24h)
+| summarize
+    TotalTests = count(),
+    SuccessfulTests = countif(success == true),
+    FailedTests = countif(success == false),
+    AvgDuration = avg(duration)
+    by location, name
+| extend AvailabilityRate = round((SuccessfulTests * 100.0) / TotalTests, 2)
+| project
+    TestName = name,
+    Location = location,
+    TotalTests,
+    SuccessfulTests,
+    FailedTests,
+    AvailabilityRate_Percent = AvailabilityRate,
+    AvgDuration_ms = round(AvgDuration, 2)
+
+// 12. Availability Over Time
+availabilityResults
+| where timestamp > ago(7d)
+| summarize
+    AvailabilityRate = round((countif(success == true) * 100.0) / count(), 2)
+    by bin(timestamp, 1h), name
+| order by timestamp desc
+| project
+    Time = timestamp,
+    TestName = name,
+    AvailabilityRate_Percent = AvailabilityRate
+
+// 13. Failed Availability Tests
+availabilityResults
+| where timestamp > ago(24h)
+| where success == false
+| project
+    Timestamp = timestamp,
+    TestName = name,
+    Location = location,
+    Duration_ms = duration,
+    Message = message
+| order by Timestamp desc
+
+// ============================================
+// CUSTOM EVENTS AND METRICS
+// ============================================
+
+// 14. Patient Data Access (HDS Compliance)
+customEvents
+| where timestamp > ago(24h)
+| where name == "PatientDataAccess"
+| extend
+    PatientId = tostring(customDimensions.PatientId),
+    Action = tostring(customDimensions.Action),
+    UserId = tostring(customDimensions.UserId)
+| summarize AccessCount = count() by PatientId, Action, UserId
+| order by AccessCount desc
+| project
+    PatientId,
+    Action,
+    UserId,
+    AccessCount
+
+// 15. Medical Record Access (HDS Compliance)
+customEvents
+| where timestamp > ago(24h)
+| where name == "MedicalRecordAccess"
+| extend
+    RecordId = tostring(customDimensions.RecordId),
+    PatientId = tostring(customDimensions.PatientId),
+    UserId = tostring(customDimensions.UserId)
+| project
+    Timestamp = timestamp,
+    RecordId,
+    PatientId,
+    UserId
+| order by Timestamp desc
+
+// 16. User Activity (HDS Article 4.1 - Audit Trail)
+requests
+| where timestamp > ago(24h)
+| where isnotempty(user_AuthenticatedId)
+| summarize
+    RequestCount = count(),
+    Operations = make_set(name),
+    FirstAccess = min(timestamp),
+    LastAccess = max(timestamp)
+    by User = user_AuthenticatedId
+| order by RequestCount desc
+| project
+    User,
+    TotalRequests = RequestCount,
+    Operations = array_length(Operations),
+    FirstAccess,
+    LastAccess,
+    SessionDuration = LastAccess - FirstAccess
+
+// ============================================
+// PERFORMANCE COUNTERS
+// ============================================
+
+// 17. CPU Usage Over Time
+performanceCounters
+| where timestamp > ago(24h)
+| where name == "% Processor Time"
+| summarize AvgCPU = avg(value) by bin(timestamp, 5m)
+| order by timestamp desc
+| project
+    Time = timestamp,
+    AvgCPU_Percent = round(AvgCPU, 2)
+
+// 18. Memory Usage Over Time
+performanceCounters
+| where timestamp > ago(24h)
+| where name == "Available Bytes"
+| summarize AvgMemoryAvailable = avg(value) by bin(timestamp, 5m)
+| extend AvgMemoryAvailable_MB = round(AvgMemoryAvailable / 1024 / 1024, 2)
+| order by timestamp desc
+| project
+    Time = timestamp,
+    AvailableMemory_MB = AvgMemoryAvailable_MB
+
+// 19. Request Rate
+performanceCounters
+| where timestamp > ago(24h)
+| where name == "Requests/Sec"
+| summarize AvgRequestRate = avg(value) by bin(timestamp, 5m)
+| order by timestamp desc
+| project
+    Time = timestamp,
+    RequestsPerSecond = round(AvgRequestRate, 2)
+
+// ============================================
+// CUSTOM METRICS
+// ============================================
+
+// 20. Response Time Trend
+customMetrics
+| where timestamp > ago(24h)
+| where name == "ResponseTime"
+| summarize
+    AvgResponseTime = avg(value),
+    P95ResponseTime = percentile(value, 95)
+    by bin(timestamp, 1h), tostring(customDimensions.Operation)
+| order by timestamp desc
+| project
+    Time = timestamp,
+    Operation = customDimensions_Operation,
+    AvgResponseTime_ms = round(AvgResponseTime, 2),
+    P95ResponseTime_ms = round(P95ResponseTime, 2)
+
+// 21. Database Query Duration Trend
+customMetrics
+| where timestamp > ago(24h)
+| where name == "DatabaseQueryDuration"
+| summarize
+    AvgDuration = avg(value),
+    P95Duration = percentile(value, 95),
+    QueryCount = count()
+    by bin(timestamp, 1h), tostring(customDimensions.QueryType)
+| order by timestamp desc
+| project
+    Time = timestamp,
+    QueryType = customDimensions_QueryType,
+    AvgDuration_ms = round(AvgDuration, 2),
+    P95Duration_ms = round(P95Duration, 2),
+    QueryCount
+
+// ============================================
+// TRACES (LOGS)
+// ============================================
+
+// 22. Error Logs
+traces
+| where timestamp > ago(24h)
+| where severityLevel >= 3  // Error and Critical
+| project
+    Timestamp = timestamp,
+    Severity = severityLevel,
+    Message = message,
+    Operation = operation_Name,
+    User = user_AuthenticatedId
+| order by Timestamp desc
+| take 100
+
+// 23. Warning Logs
+traces
+| where timestamp > ago(24h)
+| where severityLevel == 2  // Warning
+| summarize Count = count() by message
+| order by Count desc
+| take 20
+| project
+    WarningMessage = message,
+    Occurrences = Count
+
+// ============================================
+// COMPLIANCE AND AUDIT
+// ============================================
+
+// 24. HDS Compliance Report (Last 24 hours)
+union
+    (requests | where timestamp > ago(24h) | summarize RequestCount = count() | extend MetricType = "Total Requests"),
+    (requests | where timestamp > ago(24h) | where success == false | summarize FailedRequests = count() | extend MetricType = "Failed Requests"),
+    (exceptions | where timestamp > ago(24h) | summarize Exceptions = count() | extend MetricType = "Exceptions"),
+    (availabilityResults | where timestamp > ago(24h) | summarize AvgAvailability = round(avg(toint(success)) * 100, 2) | extend MetricType = "Availability %"),
+    (requests | where timestamp > ago(24h) | summarize AvgResponseTime = round(avg(duration), 2) | extend MetricType = "Avg Response Time (ms)"),
+    (customEvents | where timestamp > ago(24h) | where name == "PatientDataAccess" | summarize PatientAccesses = count() | extend MetricType = "Patient Data Accesses")
+| project MetricType, Value = coalesce(RequestCount, FailedRequests, Exceptions, AvgAvailability, AvgResponseTime, PatientAccesses)
+
+// 25. Service Level Agreement (SLA) Report
+requests
+| where timestamp > ago(30d)
+| summarize
+    TotalRequests = count(),
+    SuccessfulRequests = countif(success == true),
+    FailedRequests = countif(success == false),
+    AvgResponseTime = avg(duration),
+    P95ResponseTime = percentile(duration, 95),
+    P99ResponseTime = percentile(duration, 99)
+    by bin(timestamp, 1d)
+| extend
+    Availability_Percent = round((SuccessfulRequests * 100.0) / TotalRequests, 3),
+    SLA_Met = iff((SuccessfulRequests * 100.0) / TotalRequests >= 99.0, "✓ Yes", "✗ No")
+| order by timestamp desc
+| project
+    Date = format_datetime(timestamp, 'yyyy-MM-dd'),
+    TotalRequests,
+    SuccessfulRequests,
+    FailedRequests,
+    Availability_Percent,
+    AvgResponseTime_ms = round(AvgResponseTime, 2),
+    P95ResponseTime_ms = round(P95ResponseTime, 2),
+    P99ResponseTime_ms = round(P99ResponseTime, 2),
+    SLA_Met
+
+// ============================================
+// ANOMALY DETECTION
+// ============================================
+
+// 26. Response Time Anomalies
+requests
+| where timestamp > ago(7d)
+| make-series ResponseTime = avg(duration) default = 0 on timestamp step 1h
+| extend anomalies = series_decompose_anomalies(ResponseTime, 1.5)
+| mv-expand timestamp to typeof(datetime), ResponseTime to typeof(double), anomalies to typeof(double)
+| where anomalies != 0
+| project
+    Timestamp = timestamp,
+    ResponseTime_ms = round(ResponseTime, 2),
+    AnomalyScore = anomalies
+
+// 27. Exception Rate Anomalies
+exceptions
+| where timestamp > ago(7d)
+| make-series ExceptionCount = count() default = 0 on timestamp step 1h
+| extend anomalies = series_decompose_anomalies(ExceptionCount, 1.5)
+| mv-expand timestamp to typeof(datetime), ExceptionCount to typeof(long), anomalies to typeof(double)
+| where anomalies != 0
+| project
+    Timestamp = timestamp,
+    ExceptionCount,
+    AnomalyScore = anomalies
+
+// ============================================
+// DISTRIBUTED TRACING
+// ============================================
+
+// 28. End-to-End Transaction Trace
+let operationId = "YOUR_OPERATION_ID";  // Replace with actual operation ID
+union requests, dependencies, exceptions, traces
+| where operation_Id == operationId
+| order by timestamp asc
+| project
+    Timestamp = timestamp,
+    Type = itemType,
+    Name = name,
+    Duration_ms = duration,
+    Success = success,
+    Message = coalesce(message, outerMessage, "")
+
+// 29. Failed Request Details with Dependencies
+requests
+| where timestamp > ago(24h)
+| where success == false
+| join kind=leftouter (dependencies | where timestamp > ago(24h)) on operation_Id
+| project
+    RequestTime = timestamp,
+    Request = name,
+    RequestURL = url,
+    ResponseCode = resultCode,
+    Dependency = name1,
+    DependencyType = type1,
+    DependencySuccess = success1,
+    DependencyDuration = duration1
+| order by RequestTime desc
+| take 50

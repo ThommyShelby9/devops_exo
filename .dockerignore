@@ -1,0 +1,77 @@
+# MedSecure - Docker ignore file
+# Excludes unnecessary files from Docker build context
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+azure-pipelines.yml
+.github
+.azuredevops
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# IDE
+.vs
+.vscode
+.idea
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+**/bin/
+**/obj/
+**/out/
+**/publish/
+
+# Test results
+**/*Tests/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# Node (if React frontend)
+**/node_modules/
+**/dist/
+**/.next/
+**/build/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.temp
+*.cache
+
+# Sensitive data (should never be in repo anyway)
+*.pfx
+*.key
+*.pem
+appsettings.*.json
+!appsettings.json
+!appsettings.Development.json
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore

@@ -1,0 +1,125 @@
+# Template: OWASP Dependency Check
+# Identifies known vulnerabilities in project dependencies
+
+parameters:
+  - name: scanPath
+    type: string
+    default: '.'
+
+  - name: cvssThreshold
+    type: number
+    default: 7.0  # CVSS score threshold (0-10)
+
+  - name: failOnCvss
+    type: boolean
+    default: true
+
+steps:
+  # Install OWASP Dependency Check
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "📦 Installing OWASP Dependency Check..."
+
+      # Download latest version
+      OWASP_VERSION="9.0.9"
+      wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${OWASP_VERSION}/dependency-check-${OWASP_VERSION}-release.zip"
+
+      # Extract
+      unzip -q "dependency-check-${OWASP_VERSION}-release.zip"
+
+      # Make executable
+      chmod +x dependency-check/bin/dependency-check.sh
+
+      echo "✅ OWASP Dependency Check installed successfully"
+    displayName: 'Install OWASP Dependency Check'
+
+  # Run OWASP Dependency Check
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "🔍 Running OWASP Dependency Check..."
+
+      # Create output directory
+      mkdir -p "$(Build.ArtifactStagingDirectory)/owasp-reports"
+
+      # Run scan
+      ./dependency-check/bin/dependency-check.sh \
+        --scan "${{ parameters.scanPath }}" \
+        --format "ALL" \
+        --out "$(Build.ArtifactStagingDirectory)/owasp-reports" \
+        --project "MedSecure" \
+        --failOnCVSS ${{ parameters.cvssThreshold }} \
+        --enableExperimental \
+        --nvdApiKey "$(NVD_API_KEY)" \
+        --suppression ".owasp-suppressions.xml" \
+        || true
+
+      EXIT_CODE=$?
+
+      echo ""
+      echo "📊 OWASP Dependency Check Summary:"
+
+      # Parse HTML report for summary (if exists)
+      if [ -f "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.html" ]; then
+        echo "  ✅ Report generated successfully"
+      fi
+
+      # Parse JSON report for vulnerabilities count
+      if [ -f "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" ]; then
+        VULN_COUNT=$(jq '[.dependencies[]?.vulnerabilities[]?] | length' "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" 2>/dev/null || echo "0")
+        echo "  - Total vulnerabilities found: $VULN_COUNT"
+
+        if [ "$VULN_COUNT" -gt 0 ]; then
+          # Count by severity
+          CRITICAL=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity == "CRITICAL")] | length' "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" 2>/dev/null || echo "0")
+          HIGH=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity == "HIGH")] | length' "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" 2>/dev/null || echo "0")
+          MEDIUM=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity == "MEDIUM")] | length' "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" 2>/dev/null || echo "0")
+          LOW=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity == "LOW")] | length' "$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.json" 2>/dev/null || echo "0")
+
+          echo "  - Critical: $CRITICAL"
+          echo "  - High: $HIGH"
+          echo "  - Medium: $MEDIUM"
+          echo "  - Low: $LOW"
+        fi
+      fi
+
+      # Check exit code
+      if [ $EXIT_CODE -ne 0 ]; then
+        if [ "${{ parameters.failOnCvss }}" = "True" ]; then
+          echo ""
+          echo "❌ Vulnerabilities found with CVSS >= ${{ parameters.cvssThreshold }}"
+          exit 1
+        else
+          echo ""
+          echo "⚠️ Vulnerabilities found but continuing (failOnCvss=false)"
+          exit 0
+        fi
+      else
+        echo ""
+        echo "✅ No vulnerabilities found with CVSS >= ${{ parameters.cvssThreshold }}"
+      fi
+    displayName: 'Run OWASP Dependency Check'
+    continueOnError: ${{ not(parameters.failOnCvss) }}
+    env:
+      NVD_API_KEY: $(NVD_API_KEY)
+
+  # Publish OWASP reports
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish OWASP Reports'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/owasp-reports'
+      ArtifactName: 'OWASP-Reports'
+      publishLocation: 'Container'
+
+  # Publish HTML report as pipeline artifact for easy viewing
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish OWASP HTML Report'
+    condition: always()
+    inputs:
+      targetPath: '$(Build.ArtifactStagingDirectory)/owasp-reports/dependency-check-report.html'
+      artifact: 'OWASP-HTML-Report'
+      publishLocation: 'pipeline'

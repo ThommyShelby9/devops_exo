@@ -1,0 +1,290 @@
+# Template: Key Vault Secret Rotation
+# Checks for expiring secrets and rotates them if needed
+
+parameters:
+  - name: keyVaultName
+    type: string
+
+  - name: rotationThresholdDays
+    type: number
+    default: 30  # Rotate if expiring within 30 days
+
+  - name: validityDays
+    type: number
+    default: 90  # New secrets valid for 90 days
+
+  - name: checkOnly
+    type: boolean
+    default: false  # Set to true to only check, not rotate
+
+  - name: azureSubscription
+    type: string
+
+steps:
+  # ============================================
+  # 1. Check for Expiring Secrets
+  # ============================================
+  - task: AzurePowerShell@5
+    displayName: 'Check Secret Expiration'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      scriptType: 'inlineScript'
+      azurePowerShellVersion: 'latestVersion'
+      inline: |
+        $keyVaultName = "${{ parameters.keyVaultName }}"
+        $thresholdDays = ${{ parameters.rotationThresholdDays }}
+
+        Write-Host "🔍 Checking secrets in Key Vault: $keyVaultName"
+        Write-Host "   Threshold: $thresholdDays days"
+        Write-Host ""
+
+        # Get all secrets
+        $secrets = az keyvault secret list `
+          --vault-name $keyVaultName `
+          --output json | ConvertFrom-Json
+
+        $expiringSecrets = @()
+        $totalSecrets = $secrets.Count
+
+        Write-Host "📊 Found $totalSecrets secrets in Key Vault"
+        Write-Host ""
+
+        foreach ($secret in $secrets) {
+          $secretDetails = az keyvault secret show `
+            --vault-name $keyVaultName `
+            --name $secret.name `
+            --output json | ConvertFrom-Json
+
+          if ($secretDetails.attributes.expires) {
+            $expiryDate = [DateTime]$secretDetails.attributes.expires
+            $daysUntilExpiry = ($expiryDate - (Get-Date)).Days
+
+            $status = "🟢 OK"
+            if ($daysUntilExpiry -le 0) {
+              $status = "❌ EXPIRED"
+            } elseif ($daysUntilExpiry -le 7) {
+              $status = "🔴 CRITICAL"
+            } elseif ($daysUntilExpiry -le $thresholdDays) {
+              $status = "🟡 WARNING"
+            }
+
+            Write-Host "$status Secret: $($secret.name)"
+            Write-Host "     Expires: $($expiryDate.ToString('yyyy-MM-dd HH:mm:ss'))"
+            Write-Host "     Days until expiry: $daysUntilExpiry"
+            Write-Host ""
+
+            if ($daysUntilExpiry -le $thresholdDays) {
+              $expiringSecrets += [PSCustomObject]@{
+                Name = $secret.name
+                DaysUntilExpiry = $daysUntilExpiry
+                ExpiryDate = $expiryDate.ToString('yyyy-MM-dd')
+                Status = $status
+              }
+            }
+          } else {
+            Write-Host "⚠️  Secret: $($secret.name)"
+            Write-Host "     No expiration date set"
+            Write-Host ""
+          }
+        }
+
+        # Save expiring secrets list
+        $expiringSecretsJson = $expiringSecrets | ConvertTo-Json -Compress
+        Write-Host "##vso[task.setvariable variable=ExpiringSecrets;isOutput=true]$expiringSecretsJson"
+        Write-Host "##vso[task.setvariable variable=ExpiringSecretsCount;isOutput=true]$($expiringSecrets.Count)"
+
+        if ($expiringSecrets.Count -gt 0) {
+          Write-Host ""
+          Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
+          Write-Host " ⚠️  Found $($expiringSecrets.Count) secret(s) expiring within $thresholdDays days" -ForegroundColor Yellow
+          Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
+          Write-Host ""
+
+          $expiringSecrets | Format-Table -Property Status, Name, DaysUntilExpiry, ExpiryDate -AutoSize
+
+          if ("${{ parameters.checkOnly }}" -eq "True") {
+            Write-Host ""
+            Write-Host "⚠️  Check-only mode: Secrets will NOT be rotated" -ForegroundColor Yellow
+            Write-Host "   Set checkOnly=false to enable automatic rotation" -ForegroundColor Yellow
+          }
+        } else {
+          Write-Host ""
+          Write-Host "✅ All secrets are valid (not expiring within $thresholdDays days)" -ForegroundColor Green
+        }
+
+  # ============================================
+  # 2. Rotate Expiring Secrets (if not check-only)
+  # ============================================
+  - ${{ if eq(parameters.checkOnly, false) }}:
+      - task: AzurePowerShell@5
+        displayName: 'Rotate Expiring Secrets'
+        condition: gt(variables['ExpiringSecretsCount'], '0')
+        inputs:
+          azureSubscription: '${{ parameters.azureSubscription }}'
+          scriptType: 'filePath'
+          scriptPath: '$(Build.SourcesDirectory)/scripts/Rotate-KeyVaultSecrets.ps1'
+          scriptArguments: >
+            -KeyVaultName "${{ parameters.keyVaultName }}"
+            -ValidityDays ${{ parameters.validityDays }}
+            -Force
+          azurePowerShellVersion: 'latestVersion'
+
+  # ============================================
+  # 3. Generate Rotation Report
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      KEY_VAULT="${{ parameters.keyVaultName }}"
+      OUTPUT_DIR="$(Build.ArtifactStagingDirectory)/keyvault-reports"
+
+      mkdir -p "$OUTPUT_DIR"
+
+      echo "📝 Generating Key Vault rotation report..."
+
+      # Get all secrets with expiration info
+      az keyvault secret list \
+        --vault-name "$KEY_VAULT" \
+        --output json | jq '[.[] | {
+          name: .name,
+          enabled: .attributes.enabled,
+          created: .attributes.created,
+          updated: .attributes.updated,
+          expires: .attributes.expires,
+          tags: .tags
+        }]' > "$OUTPUT_DIR/secrets-inventory.json"
+
+      # Create summary
+      cat > "$OUTPUT_DIR/rotation-summary.json" <<EOF
+      {
+        "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "keyVault": "$KEY_VAULT",
+        "rotationThresholdDays": ${{ parameters.rotationThresholdDays }},
+        "validityDays": ${{ parameters.validityDays }},
+        "checkOnly": ${{ parameters.checkOnly }},
+        "expiringSecretsCount": ${ExpiringSecretsCount:-0},
+        "buildId": "$(Build.BuildId)",
+        "buildNumber": "$(Build.BuildNumber)"
+      }
+      EOF
+
+      echo "✅ Rotation report generated"
+      cat "$OUTPUT_DIR/rotation-summary.json"
+    displayName: 'Generate Rotation Report'
+    condition: always()
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Rotation Reports'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/keyvault-reports'
+      ArtifactName: 'KeyVault-Rotation-Reports'
+      publishLocation: 'Container'
+
+  # ============================================
+  # 4. Create Work Item if Secrets Expiring
+  # ============================================
+  - ${{ if eq(parameters.checkOnly, true) }}:
+      - task: CreateWorkItem@1
+        displayName: 'Create Work Item for Expiring Secrets'
+        condition: gt(variables['ExpiringSecretsCount'], '0')
+        inputs:
+          workItemType: 'Task'
+          title: '⚠️ Key Vault secrets expiring soon in ${{ parameters.keyVaultName }}'
+          assignedTo: ''  # Assign to default
+          areaPath: '$(System.TeamProject)'
+          iterationPath: '$(System.TeamProject)'
+          fieldMappings: |
+            Description=Found $(ExpiringSecretsCount) secret(s) expiring within ${{ parameters.rotationThresholdDays }} days in Key Vault: ${{ parameters.keyVaultName }}<br/><br/>Please rotate these secrets using the Rotate-KeyVaultSecrets.ps1 script or re-run the pipeline with checkOnly=false.<br/><br/>Build: $(Build.BuildNumber)<br/>Build URL: $(Build.BuildUri)
+          associate: true
+          linkWorkItems: false
+
+  # ============================================
+  # 5. Send Email Notification (if secrets expiring)
+  # ============================================
+  - script: |
+      #!/bin/bash
+
+      EXPIRING_COUNT="${ExpiringSecretsCount:-0}"
+
+      if [ "$EXPIRING_COUNT" -gt 0 ]; then
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        echo " 📧 Email Notification Required"
+        echo "═══════════════════════════════════════════════════════════"
+        echo ""
+        echo "Subject: [ALERT] $EXPIRING_COUNT Key Vault secret(s) expiring soon"
+        echo ""
+        echo "Dear MedSecure Team,"
+        echo ""
+        echo "This is an automated alert from the CI/CD pipeline."
+        echo ""
+        echo "Key Vault: ${{ parameters.keyVaultName }}"
+        echo "Expiring secrets: $EXPIRING_COUNT"
+        echo "Threshold: ${{ parameters.rotationThresholdDays }} days"
+        echo ""
+        echo "Action required:"
+        if [ "${{ parameters.checkOnly }}" = "True" ]; then
+          echo "  1. Run: ./scripts/Rotate-KeyVaultSecrets.ps1 -KeyVaultName ${{ parameters.keyVaultName }}"
+          echo "  OR"
+          echo "  2. Re-run pipeline with checkOnly=false for automatic rotation"
+        else
+          echo "  - Secrets have been automatically rotated"
+          echo "  - Please verify the rotation was successful"
+          echo "  - Update dependent systems if necessary"
+        fi
+        echo ""
+        echo "Build: $(Build.BuildNumber)"
+        echo "Build URL: $(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+        echo ""
+        echo "Best regards,"
+        echo "MedSecure DevOps Automation"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════"
+        echo ""
+        echo "ℹ️  Configure email notifications in Azure DevOps:"
+        echo "   Project Settings → Notifications → New subscription"
+        echo "   Or use Azure Monitor Action Groups"
+      else
+        echo "✅ No email notification required - all secrets are valid"
+      fi
+    displayName: 'Prepare Email Notification'
+    condition: always()
+
+  # ============================================
+  # 6. Audit Trail (HDS Compliance)
+  # ============================================
+  - script: |
+      #!/bin/bash
+
+      OUTPUT_DIR="$(Build.ArtifactStagingDirectory)/keyvault-reports"
+
+      # Create audit trail
+      cat > "$OUTPUT_DIR/rotation-audit.json" <<EOF
+      {
+        "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "action": "SecretRotationCheck",
+        "keyVault": "${{ parameters.keyVaultName }}",
+        "checkOnly": ${{ parameters.checkOnly }},
+        "rotationThresholdDays": ${{ parameters.rotationThresholdDays }},
+        "validityDays": ${{ parameters.validityDays }},
+        "expiringSecretsCount": ${ExpiringSecretsCount:-0},
+        "buildId": "$(Build.BuildId)",
+        "buildNumber": "$(Build.BuildNumber)",
+        "triggeredBy": "$(Build.RequestedFor)",
+        "sourceBranch": "$(Build.SourceBranch)",
+        "commitId": "$(Build.SourceVersion)",
+        "pipelineUrl": "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)",
+        "compliance": {
+          "hds": true,
+          "rgpd": true,
+          "iso27001": true
+        }
+      }
+      EOF
+
+      echo "📝 Audit trail created for HDS compliance"
+      cat "$OUTPUT_DIR/rotation-audit.json"
+    displayName: 'Create Audit Trail'
+    condition: always()

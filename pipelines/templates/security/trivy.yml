@@ -1,0 +1,146 @@
+# Template: Trivy - Container Image Security Scanner
+# Scans Docker images for vulnerabilities and misconfigurations
+
+parameters:
+  - name: imageName
+    type: string
+
+  - name: imageTag
+    type: string
+    default: 'latest'
+
+  - name: severityLevels
+    type: string
+    default: 'CRITICAL,HIGH'
+
+  - name: failOnVulnerabilities
+    type: boolean
+    default: true
+
+  - name: scanType
+    type: string
+    default: 'image'  # image, filesystem, config
+
+steps:
+  # Install Trivy
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "📦 Installing Trivy..."
+
+      # Add Aqua Security repository
+      wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+      echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+
+      # Update and install
+      sudo apt-get update
+      sudo apt-get install -y trivy
+
+      # Verify installation
+      trivy --version
+
+      echo "✅ Trivy installed successfully"
+    displayName: 'Install Trivy'
+
+  # Scan Docker image
+  - script: |
+      #!/bin/bash
+      set -e
+
+      IMAGE="${{ parameters.imageName }}:${{ parameters.imageTag }}"
+
+      echo "🔍 Scanning Docker image: $IMAGE"
+      echo "   Severity levels: ${{ parameters.severityLevels }}"
+
+      # Create output directory
+      mkdir -p "$(Build.ArtifactStagingDirectory)/trivy-reports"
+
+      # Run Trivy scan
+      trivy ${{ parameters.scanType }} \
+        --severity "${{ parameters.severityLevels }}" \
+        --format json \
+        --output "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" \
+        "$IMAGE"
+
+      # Also generate table format for display
+      trivy ${{ parameters.scanType }} \
+        --severity "${{ parameters.severityLevels }}" \
+        --format table \
+        --output "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.txt" \
+        "$IMAGE"
+
+      # Generate SARIF format for GitHub Advanced Security (if using GitHub)
+      trivy ${{ parameters.scanType }} \
+        --severity "${{ parameters.severityLevels }}" \
+        --format sarif \
+        --output "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.sarif" \
+        "$IMAGE"
+
+      echo ""
+      echo "📊 Trivy Scan Results:"
+      echo "========================================"
+      cat "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.txt"
+      echo "========================================"
+
+      # Parse JSON report for summary
+      if [ -f "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" ]; then
+        CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" 2>/dev/null || echo "0")
+        HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" 2>/dev/null || echo "0")
+        MEDIUM=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" 2>/dev/null || echo "0")
+        LOW=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "LOW")] | length' "$(Build.ArtifactStagingDirectory)/trivy-reports/trivy-report.json" 2>/dev/null || echo "0")
+
+        echo ""
+        echo "📈 Vulnerability Summary:"
+        echo "  - Critical: $CRITICAL"
+        echo "  - High: $HIGH"
+        echo "  - Medium: $MEDIUM"
+        echo "  - Low: $LOW"
+
+        TOTAL=$(($CRITICAL + $HIGH))
+
+        if [ $TOTAL -gt 0 ]; then
+          echo ""
+          echo "❌ Found $TOTAL vulnerabilities (CRITICAL/HIGH)"
+
+          if [ "${{ parameters.failOnVulnerabilities }}" = "True" ]; then
+            echo "🚫 Failing build due to vulnerabilities (HDS compliance)"
+            exit 1
+          else
+            echo "⚠️ Continuing despite vulnerabilities (failOnVulnerabilities=false)"
+          fi
+        else
+          echo ""
+          echo "✅ No CRITICAL or HIGH vulnerabilities found!"
+        fi
+      fi
+    displayName: 'Scan Image with Trivy'
+    continueOnError: ${{ not(parameters.failOnVulnerabilities) }}
+
+  # Scan for misconfigurations
+  - script: |
+      #!/bin/bash
+      set -e
+
+      IMAGE="${{ parameters.imageName }}:${{ parameters.imageTag }}"
+
+      echo "🔍 Scanning for misconfigurations..."
+
+      trivy config \
+        --severity "${{ parameters.severityLevels }}" \
+        --format table \
+        "src/Web/Dockerfile" \
+        || echo "⚠️ No Dockerfile found or no issues detected"
+
+      echo "✅ Misconfiguration scan completed"
+    displayName: 'Scan for Misconfigurations'
+    continueOnError: true
+
+  # Publish Trivy reports
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Trivy Reports'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/trivy-reports'
+      ArtifactName: 'Trivy-Reports'
+      publishLocation: 'Container'

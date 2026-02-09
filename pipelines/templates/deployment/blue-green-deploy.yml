@@ -1,0 +1,294 @@
+# Template: Blue/Green Deployment with Azure App Service Slots
+# Deploys to staging slot, runs smoke tests, swaps to production
+
+parameters:
+  - name: azureSubscription
+    type: string
+
+  - name: resourceGroupName
+    type: string
+
+  - name: appServiceName
+    type: string
+
+  - name: slotName
+    type: string
+    default: 'staging'
+
+  - name: packagePath
+    type: string
+    default: '$(Pipeline.Workspace)/**/*.zip'
+
+  - name: smokeTestUrl
+    type: string
+    default: ''  # Will be constructed if empty
+
+  - name: smokeTestTimeout
+    type: number
+    default: 300  # 5 minutes
+
+  - name: enableAutoSwap
+    type: boolean
+    default: false  # Manual approval required by default (HDS compliance)
+
+  - name: swapWithPreview
+    type: boolean
+    default: true  # Multi-phase swap for validation
+
+  - name: rollbackOnFailure
+    type: boolean
+    default: true
+
+steps:
+  # ============================================
+  # PHASE 1: Deploy to Staging Slot
+  # ============================================
+  - task: AzureWebApp@1
+    displayName: 'Deploy to Staging Slot'
+    inputs:
+      azureSubscription: '${{ parameters.azureSubscription }}'
+      appType: 'webAppLinux'
+      appName: '${{ parameters.appServiceName }}'
+      deployToSlotOrASE: true
+      resourceGroupName: '${{ parameters.resourceGroupName }}'
+      slotName: '${{ parameters.slotName }}'
+      package: '${{ parameters.packagePath }}'
+      deploymentMethod: 'zipDeploy'
+
+  # Wait for deployment to settle
+  - script: |
+      echo "⏳ Waiting for deployment to settle (30 seconds)..."
+      sleep 30
+    displayName: 'Wait for Deployment'
+
+  # ============================================
+  # PHASE 2: Warm-up Staging Slot
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      SLOT_URL="https://${{ parameters.appServiceName }}-${{ parameters.slotName }}.azurewebsites.net"
+
+      echo "🔥 Warming up staging slot: $SLOT_URL"
+
+      # Make 5 requests to warm up the application
+      for i in {1..5}; do
+        echo "  Request $i/5..."
+        curl -s -o /dev/null -w "  Status: %{http_code}, Time: %{time_total}s\n" \
+          --max-time 30 \
+          "$SLOT_URL" || echo "  ⚠️ Request failed (may be normal during warmup)"
+        sleep 2
+      done
+
+      echo "✅ Warm-up completed"
+    displayName: 'Warm-up Staging Slot'
+    continueOnError: true
+
+  # ============================================
+  # PHASE 3: Smoke Tests on Staging
+  # ============================================
+  - template: ../testing/smoke-tests.yml
+    parameters:
+      targetUrl: 'https://${{ parameters.appServiceName }}-${{ parameters.slotName }}.azurewebsites.net'
+      timeout: ${{ parameters.smokeTestTimeout }}
+      healthCheckPath: '/health'
+      failOnError: true
+
+  # ============================================
+  # PHASE 4: Swap with Preview (Optional)
+  # ============================================
+  - ${{ if eq(parameters.swapWithPreview, true) }}:
+      - task: AzureAppServiceManage@0
+        displayName: 'Start Swap with Preview'
+        inputs:
+          azureSubscription: '${{ parameters.azureSubscription }}'
+          action: 'Start Swap With Preview'
+          webAppName: '${{ parameters.appServiceName }}'
+          resourceGroupName: '${{ parameters.resourceGroupName }}'
+          sourceSlot: '${{ parameters.slotName }}'
+          targetSlot: 'production'
+
+      # Wait and validate in preview mode
+      - script: |
+          echo "⏳ Waiting 60 seconds for preview validation..."
+          sleep 60
+        displayName: 'Wait for Preview'
+
+      # Re-run smoke tests on preview
+      - template: ../testing/smoke-tests.yml
+        parameters:
+          targetUrl: 'https://${{ parameters.appServiceName }}.azurewebsites.net'
+          timeout: 60
+          healthCheckPath: '/health'
+          failOnError: true
+
+  # ============================================
+  # PHASE 5: Complete Swap to Production
+  # ============================================
+  - ${{ if eq(parameters.enableAutoSwap, true) }}:
+      # Auto-swap (no manual approval)
+      - task: AzureAppServiceManage@0
+        displayName: 'Complete Swap (Auto)'
+        inputs:
+          azureSubscription: '${{ parameters.azureSubscription }}'
+          action: ${{ eq(parameters.swapWithPreview, true) && 'Complete Swap' || 'Swap Slots' }}
+          webAppName: '${{ parameters.appServiceName }}'
+          resourceGroupName: '${{ parameters.resourceGroupName }}'
+          sourceSlot: '${{ parameters.slotName }}'
+          targetSlot: 'production'
+
+  - ${{ if eq(parameters.enableAutoSwap, false) }}:
+      # Manual approval required
+      - script: |
+          echo "⏸️  Manual approval required for production swap"
+          echo ""
+          echo "📊 Staging Slot URL:"
+          echo "    https://${{ parameters.appServiceName }}-${{ parameters.slotName }}.azurewebsites.net"
+          echo ""
+          echo "To complete the swap, approve the deployment in Azure DevOps."
+        displayName: 'Waiting for Manual Approval'
+
+      # This task will be executed only after manual approval
+      - task: AzureAppServiceManage@0
+        displayName: 'Complete Swap (Manual Approval)'
+        inputs:
+          azureSubscription: '${{ parameters.azureSubscription }}'
+          action: ${{ eq(parameters.swapWithPreview, true) && 'Complete Swap' || 'Swap Slots' }}
+          webAppName: '${{ parameters.appServiceName }}'
+          resourceGroupName: '${{ parameters.resourceGroupName }}'
+          sourceSlot: '${{ parameters.slotName }}'
+          targetSlot: 'production'
+
+  # ============================================
+  # PHASE 6: Post-Swap Validation
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      PROD_URL="https://${{ parameters.appServiceName }}.azurewebsites.net"
+
+      echo "⏳ Waiting 30 seconds for production to stabilize..."
+      sleep 30
+
+      echo "🔍 Validating production deployment: $PROD_URL"
+    displayName: 'Wait for Production Stabilization'
+
+  # Run smoke tests on production
+  - template: ../testing/smoke-tests.yml
+    parameters:
+      targetUrl: 'https://${{ parameters.appServiceName }}.azurewebsites.net'
+      timeout: 120
+      healthCheckPath: '/health'
+      failOnError: ${{ parameters.rollbackOnFailure }}
+
+  # ============================================
+  # PHASE 7: Rollback on Failure (Optional)
+  # ============================================
+  - ${{ if eq(parameters.rollbackOnFailure, true) }}:
+      - script: |
+          #!/bin/bash
+
+          # This script runs only if previous steps failed
+          if [ "$AGENT_JOBSTATUS" != "Succeeded" ]; then
+            echo "❌ Deployment validation failed!"
+            echo "🔄 Triggering automatic rollback..."
+            echo ""
+            echo "Production will be swapped back to the previous version."
+            exit 0  # Don't fail this step, let the swap task handle it
+          else
+            echo "✅ All validation passed, no rollback needed"
+            exit 0
+          fi
+        displayName: 'Check Rollback Condition'
+        condition: always()
+
+      - task: AzureAppServiceManage@0
+        displayName: 'Rollback (Swap Back)'
+        condition: failed()  # Only run if previous steps failed
+        inputs:
+          azureSubscription: '${{ parameters.azureSubscription }}'
+          action: 'Swap Slots'
+          webAppName: '${{ parameters.appServiceName }}'
+          resourceGroupName: '${{ parameters.resourceGroupName }}'
+          sourceSlot: 'production'
+          targetSlot: '${{ parameters.slotName }}'
+
+      - script: |
+          echo "🔄 Rollback completed!"
+          echo "❌ Deployment FAILED and was rolled back"
+          echo ""
+          echo "📊 Current Status:"
+          echo "  - Production: Reverted to previous version"
+          echo "  - Staging: Contains the failed deployment"
+          echo ""
+          echo "Please review logs and fix issues before retrying."
+          exit 1
+        displayName: 'Rollback Complete'
+        condition: failed()
+
+  # ============================================
+  # PHASE 8: Success Notification
+  # ============================================
+  - script: |
+      #!/bin/bash
+
+      echo "🎉 Blue/Green Deployment Successful!"
+      echo ""
+      echo "📊 Deployment Summary:"
+      echo "  ✅ Deployed to: ${{ parameters.slotName }} slot"
+      echo "  ✅ Smoke tests: PASSED"
+      echo "  ✅ Swapped to: production"
+      echo "  ✅ Production validation: PASSED"
+      echo ""
+      echo "🌐 Production URL:"
+      echo "    https://${{ parameters.appServiceName }}.azurewebsites.net"
+      echo ""
+      echo "🔵 Staging Slot (contains previous production):"
+      echo "    https://${{ parameters.appServiceName }}-${{ parameters.slotName }}.azurewebsites.net"
+      echo ""
+      echo "ℹ️  If you need to rollback, swap the slots back manually or re-run the pipeline."
+    displayName: 'Deployment Success Summary'
+    condition: succeeded()
+
+  # ============================================
+  # PHASE 9: Audit Trail (HDS Compliance)
+  # ============================================
+  - script: |
+      #!/bin/bash
+
+      # Create audit log
+      cat > "$(Build.ArtifactStagingDirectory)/deployment-audit.json" <<EOF
+      {
+        "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "deploymentId": "$(Build.BuildId)",
+        "deploymentStrategy": "Blue/Green",
+        "appService": "${{ parameters.appServiceName }}",
+        "resourceGroup": "${{ parameters.resourceGroupName }}",
+        "sourceSlot": "${{ parameters.slotName }}",
+        "targetSlot": "production",
+        "swapType": "${{ parameters.swapWithPreview && 'SwapWithPreview' || 'DirectSwap' }}",
+        "autoSwap": ${{ parameters.enableAutoSwap }},
+        "rollbackEnabled": ${{ parameters.rollbackOnFailure }},
+        "status": "$(Agent.JobStatus)",
+        "buildNumber": "$(Build.BuildNumber)",
+        "triggeredBy": "$(Build.RequestedFor)",
+        "sourceBranch": "$(Build.SourceBranch)",
+        "commitId": "$(Build.SourceVersion)",
+        "pipelineUrl": "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+      }
+      EOF
+
+      echo "📝 Deployment audit log created"
+      cat "$(Build.ArtifactStagingDirectory)/deployment-audit.json"
+    displayName: 'Create Audit Trail'
+    condition: always()
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Deployment Audit'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/deployment-audit.json'
+      ArtifactName: 'DeploymentAudit'
+      publishLocation: 'Container'

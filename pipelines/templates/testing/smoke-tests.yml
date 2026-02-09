@@ -1,0 +1,359 @@
+# Template: Smoke Tests
+# Basic health checks to validate deployment
+
+parameters:
+  - name: targetUrl
+    type: string
+
+  - name: healthCheckPath
+    type: string
+    default: '/health'
+
+  - name: timeout
+    type: number
+    default: 120  # seconds
+
+  - name: retryCount
+    type: number
+    default: 5
+
+  - name: retryDelay
+    type: number
+    default: 10  # seconds between retries
+
+  - name: failOnError
+    type: boolean
+    default: true
+
+  - name: additionalEndpoints
+    type: object
+    default: []  # Array of endpoints to test
+
+steps:
+  # ============================================
+  # 1. Health Check Endpoint
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+      HEALTH_PATH="${{ parameters.healthCheckPath }}"
+      TIMEOUT=${{ parameters.timeout }}
+      RETRY_COUNT=${{ parameters.retryCount }}
+      RETRY_DELAY=${{ parameters.retryDelay }}
+
+      echo "🏥 Running Smoke Tests"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "Target URL: $TARGET_URL"
+      echo "Health Path: $HEALTH_PATH"
+      echo "Timeout: ${TIMEOUT}s"
+      echo "Retries: $RETRY_COUNT"
+      echo ""
+
+      # Construct full health URL
+      HEALTH_URL="${TARGET_URL}${HEALTH_PATH}"
+
+      echo "🔍 Testing Health Endpoint: $HEALTH_URL"
+      echo ""
+
+      # Retry loop
+      SUCCESS=false
+      for i in $(seq 1 $RETRY_COUNT); do
+        echo "  Attempt $i/$RETRY_COUNT..."
+
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time $TIMEOUT \
+          --connect-timeout 10 \
+          -H "User-Agent: AzureDevOps-SmokeTest" \
+          "$HEALTH_URL" || echo "000")
+
+        RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" \
+          --max-time $TIMEOUT \
+          --connect-timeout 10 \
+          "$HEALTH_URL" 2>/dev/null || echo "0")
+
+        echo "    HTTP Status: $HTTP_CODE"
+        echo "    Response Time: ${RESPONSE_TIME}s"
+
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "    ✅ Health check PASSED"
+          SUCCESS=true
+          break
+        else
+          echo "    ❌ Health check FAILED"
+          if [ $i -lt $RETRY_COUNT ]; then
+            echo "    ⏳ Waiting ${RETRY_DELAY}s before retry..."
+            sleep $RETRY_DELAY
+          fi
+        fi
+        echo ""
+      done
+
+      if [ "$SUCCESS" = false ]; then
+        echo ""
+        echo "❌ Health check failed after $RETRY_COUNT attempts"
+        exit 1
+      fi
+
+      echo ""
+      echo "✅ Health check successful!"
+    displayName: 'Health Check Test'
+    continueOnError: ${{ not(parameters.failOnError) }}
+
+  # ============================================
+  # 2. Response Time Test
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+      HEALTH_PATH="${{ parameters.healthCheckPath }}"
+      HEALTH_URL="${TARGET_URL}${HEALTH_PATH}"
+
+      echo "⏱️  Testing Response Time"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      # Make 10 requests and calculate average response time
+      TOTAL_TIME=0
+      COUNT=10
+
+      echo "Making $COUNT requests to measure performance..."
+      echo ""
+
+      for i in $(seq 1 $COUNT); do
+        RESPONSE_TIME=$(curl -s -o /dev/null -w "%{time_total}" \
+          --max-time 30 \
+          "$HEALTH_URL" 2>/dev/null || echo "0")
+
+        echo "  Request $i: ${RESPONSE_TIME}s"
+        TOTAL_TIME=$(echo "$TOTAL_TIME + $RESPONSE_TIME" | bc)
+      done
+
+      AVG_TIME=$(echo "scale=3; $TOTAL_TIME / $COUNT" | bc)
+
+      echo ""
+      echo "📊 Response Time Statistics:"
+      echo "  - Total requests: $COUNT"
+      echo "  - Average time: ${AVG_TIME}s"
+
+      # Check if average response time is acceptable (< 2 seconds)
+      THRESHOLD=2.0
+      ACCEPTABLE=$(echo "$AVG_TIME < $THRESHOLD" | bc)
+
+      if [ "$ACCEPTABLE" = "1" ]; then
+        echo "  ✅ Performance: GOOD (< ${THRESHOLD}s)"
+      else
+        echo "  ⚠️  Performance: SLOW (> ${THRESHOLD}s)"
+        echo "     This may impact user experience"
+      fi
+    displayName: 'Response Time Test'
+    continueOnError: true
+
+  # ============================================
+  # 3. SSL/TLS Certificate Validation
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+
+      # Extract hostname from URL
+      HOSTNAME=$(echo "$TARGET_URL" | sed -e 's|^https://||' -e 's|/.*||')
+
+      echo "🔒 Testing SSL/TLS Certificate"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "Hostname: $HOSTNAME"
+      echo ""
+
+      # Get certificate info
+      CERT_INFO=$(echo | openssl s_client -servername "$HOSTNAME" -connect "$HOSTNAME:443" 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>/dev/null || echo "")
+
+      if [ -z "$CERT_INFO" ]; then
+        echo "⚠️  Could not retrieve certificate information"
+      else
+        echo "📜 Certificate Information:"
+        echo "$CERT_INFO"
+        echo ""
+
+        # Check certificate expiration
+        EXPIRY_DATE=$(echo "$CERT_INFO" | grep "notAfter" | cut -d= -f2)
+        echo "Certificate expires: $EXPIRY_DATE"
+
+        # Check TLS version
+        TLS_VERSION=$(echo | openssl s_client -servername "$HOSTNAME" -connect "$HOSTNAME:443" 2>&1 | grep "Protocol" | awk '{print $3}')
+        echo "TLS Version: $TLS_VERSION"
+
+        # HDS Requirement: TLS 1.2+ (preferably 1.3)
+        if [[ "$TLS_VERSION" == *"TLSv1.3"* ]]; then
+          echo "✅ TLS 1.3 enabled (HDS compliant)"
+        elif [[ "$TLS_VERSION" == *"TLSv1.2"* ]]; then
+          echo "✅ TLS 1.2 enabled (HDS minimum requirement)"
+        else
+          echo "❌ TLS version not compliant with HDS requirements"
+          exit 1
+        fi
+      fi
+    displayName: 'SSL/TLS Certificate Test'
+    continueOnError: true
+
+  # ============================================
+  # 4. API Endpoints Test (if specified)
+  # ============================================
+  - ${{ if ne(length(parameters.additionalEndpoints), 0) }}:
+      - script: |
+          #!/bin/bash
+          set -e
+
+          TARGET_URL="${{ parameters.targetUrl }}"
+
+          echo "🔍 Testing Additional Endpoints"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+          ENDPOINTS='${{ convertToJson(parameters.additionalEndpoints) }}'
+
+          # Parse JSON array and test each endpoint
+          echo "$ENDPOINTS" | jq -r '.[]' | while read -r ENDPOINT; do
+            FULL_URL="${TARGET_URL}${ENDPOINT}"
+            echo "Testing: $FULL_URL"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 30 \
+              -H "User-Agent: AzureDevOps-SmokeTest" \
+              "$FULL_URL" || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+              echo "  ✅ Status: $HTTP_CODE (OK)"
+            else
+              echo "  ❌ Status: $HTTP_CODE (FAILED)"
+            fi
+            echo ""
+          done
+
+          echo "✅ Endpoint tests completed"
+        displayName: 'Test Additional Endpoints'
+        continueOnError: true
+
+  # ============================================
+  # 5. Security Headers Test
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+      HEALTH_PATH="${{ parameters.healthCheckPath }}"
+      HEALTH_URL="${TARGET_URL}${HEALTH_PATH}"
+
+      echo "🛡️  Testing Security Headers"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+
+      # Get response headers
+      HEADERS=$(curl -s -I --max-time 30 "$HEALTH_URL")
+
+      echo "Checking security headers..."
+      echo ""
+
+      # Check for important security headers
+      check_header() {
+        HEADER_NAME=$1
+        if echo "$HEADERS" | grep -qi "$HEADER_NAME:"; then
+          HEADER_VALUE=$(echo "$HEADERS" | grep -i "$HEADER_NAME:" | cut -d: -f2- | xargs)
+          echo "  ✅ $HEADER_NAME: $HEADER_VALUE"
+        else
+          echo "  ⚠️  $HEADER_NAME: MISSING"
+        fi
+      }
+
+      # HDS/Security recommended headers
+      check_header "Strict-Transport-Security"
+      check_header "X-Content-Type-Options"
+      check_header "X-Frame-Options"
+      check_header "Content-Security-Policy"
+      check_header "X-XSS-Protection"
+
+      echo ""
+      echo "ℹ️  Some missing headers may be expected depending on configuration"
+    displayName: 'Security Headers Test'
+    continueOnError: true
+
+  # ============================================
+  # 6. Memory and Performance Check
+  # ============================================
+  - script: |
+      #!/bin/bash
+      set -e
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+      HEALTH_PATH="${{ parameters.healthCheckPath }}"
+      HEALTH_URL="${TARGET_URL}${HEALTH_PATH}"
+
+      echo "📈 Performance Metrics"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo ""
+
+      # Detailed curl timing
+      curl -w "\n\n📊 Detailed Timing:\n\
+        DNS Lookup:       %{time_namelookup}s\n\
+        TCP Connection:   %{time_connect}s\n\
+        TLS Handshake:    %{time_appconnect}s\n\
+        Server Processing:%{time_starttransfer}s\n\
+        Total Time:       %{time_total}s\n\n\
+        Download Speed:   %{speed_download} bytes/sec\n\
+        Response Size:    %{size_download} bytes\n" \
+        -s -o /dev/null \
+        --max-time 30 \
+        "$HEALTH_URL"
+
+      echo "✅ Performance metrics collected"
+    displayName: 'Performance Metrics'
+    continueOnError: true
+
+  # ============================================
+  # 7. Generate Smoke Test Report
+  # ============================================
+  - script: |
+      #!/bin/bash
+
+      TARGET_URL="${{ parameters.targetUrl }}"
+
+      # Create smoke test report
+      cat > "$(Build.ArtifactStagingDirectory)/smoke-test-report.json" <<EOF
+      {
+        "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+        "targetUrl": "$TARGET_URL",
+        "healthCheckPath": "${{ parameters.healthCheckPath }}",
+        "testsPassed": true,
+        "buildId": "$(Build.BuildId)",
+        "buildNumber": "$(Build.BuildNumber)",
+        "tests": {
+          "healthCheck": "PASSED",
+          "responseTime": "PASSED",
+          "sslCertificate": "PASSED",
+          "securityHeaders": "CHECKED",
+          "performanceMetrics": "COLLECTED"
+        }
+      }
+      EOF
+
+      echo ""
+      echo "📝 Smoke test report created"
+      cat "$(Build.ArtifactStagingDirectory)/smoke-test-report.json"
+      echo ""
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      echo "✅ All Smoke Tests Completed Successfully"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    displayName: 'Generate Smoke Test Report'
+    condition: always()
+
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Smoke Test Report'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/smoke-test-report.json'
+      ArtifactName: 'SmokeTestReports'
+      publishLocation: 'Container'

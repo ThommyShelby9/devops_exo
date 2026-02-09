@@ -1,0 +1,90 @@
+# ============================================
+# MedSecure Local Development Environment
+# Docker Compose pour développement local
+# ============================================
+
+version: '3.8'
+
+services:
+  # ============================================
+  # SQL Server (Base de données)
+  # ============================================
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: medsecure-sql
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=MedSecure2024!
+      - MSSQL_PID=Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    networks:
+      - medsecure-network
+    healthcheck:
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P MedSecure2024! -Q "SELECT 1" || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ============================================
+  # Azure Storage Emulator (Azurite)
+  # Pour simuler Azure Blob Storage en local
+  # ============================================
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    container_name: medsecure-storage
+    ports:
+      - "10000:10000"  # Blob service
+      - "10001:10001"  # Queue service
+      - "10002:10002"  # Table service
+    volumes:
+      - azurite-data:/data
+    networks:
+      - medsecure-network
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0"
+
+  # ============================================
+  # Redis (Cache - optionnel)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: medsecure-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - medsecure-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ============================================
+  # MailHog (SMTP local pour tests emails)
+  # ============================================
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: medsecure-mail
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    networks:
+      - medsecure-network
+
+volumes:
+  sqlserver-data:
+    driver: local
+  azurite-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  medsecure-network:
+    driver: bridge

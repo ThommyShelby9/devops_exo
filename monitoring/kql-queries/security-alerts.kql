@@ -1,0 +1,340 @@
+// ============================================
+// SECURITY ALERTS - KQL Queries
+// MedSecure Platform - Real-time Security Monitoring
+// ============================================
+
+// ============================================
+// ALERT 1: MULTIPLE FAILED KEY VAULT ACCESS
+// ============================================
+// Trigger: More than 5 failed attempts in 5 minutes from same IP
+// Severity: High
+// HDS: Article 7.2 - Intrusion detection
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where ResultSignature != "OK"
+| where TimeGenerated > ago(5m)
+| summarize
+    FailedAttempts = count(),
+    Operations = make_set(OperationName),
+    Users = make_set(identity_claim_upn_s)
+    by CallerIPAddress, bin(TimeGenerated, 5m)
+| where FailedAttempts > 5
+| project
+    TimeGenerated,
+    CallerIPAddress,
+    FailedAttempts,
+    Operations,
+    Users,
+    AlertSeverity = "High",
+    AlertTitle = "Multiple failed Key Vault access attempts detected"
+
+// ============================================
+// ALERT 2: SECRET ACCESSED FROM UNUSUAL LOCATION
+// ============================================
+// Trigger: Secret accessed from IP outside known ranges
+// Severity: Medium
+// HDS: Article 7.2 - Anomaly detection
+
+let KnownIPRanges = dynamic(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where OperationName == "SecretGet"
+| where TimeGenerated > ago(5m)
+| where not(ipv4_is_in_any_range(CallerIPAddress, KnownIPRanges))
+| project
+    TimeGenerated,
+    CallerIPAddress,
+    SecretName = properties_objectName_s,
+    User = identity_claim_upn_s,
+    AlertSeverity = "Medium",
+    AlertTitle = "Secret accessed from unusual location"
+
+// ============================================
+// ALERT 3: PRIVILEGED USER ACTIVITY
+// ============================================
+// Trigger: Admin user performs sensitive operations
+// Severity: Informational (for audit)
+// HDS: Article 4.1 - Privileged access tracking
+
+AzureDiagnostics
+| where identity_claim_upn_s contains "admin" or identity_claim_upn_s contains "root"
+| where OperationName in ("SecretDelete", "KeyDelete", "CertificateDelete", "SecretSet")
+| where TimeGenerated > ago(5m)
+| project
+    TimeGenerated,
+    User = identity_claim_upn_s,
+    OperationName,
+    Resource = properties_objectName_s,
+    CallerIPAddress,
+    AlertSeverity = "Informational",
+    AlertTitle = "Privileged user performed sensitive operation"
+
+// ============================================
+// ALERT 4: SQL INJECTION ATTEMPT DETECTED
+// ============================================
+// Trigger: SQL query contains suspicious patterns
+// Severity: Critical
+// HDS: Article 7.2 - Attack detection
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where TimeGenerated > ago(5m)
+| where statement_s contains "'" or statement_s contains "--" or statement_s contains "OR 1=1" or statement_s contains "DROP TABLE" or statement_s contains "EXEC("
+| project
+    TimeGenerated,
+    User = database_principal_name_s,
+    ClientIP = client_ip_s,
+    SuspiciousQuery = statement_s,
+    Database = database_name_s,
+    AlertSeverity = "Critical",
+    AlertTitle = "Potential SQL injection attempt detected"
+
+// ============================================
+// ALERT 5: UNAUTHORIZED DATA ACCESS
+// ============================================
+// Trigger: Failed SQL access attempts
+// Severity: High
+// HDS: Article 7.2 - Access control violation
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where succeeded_s == "false"
+| where TimeGenerated > ago(5m)
+| summarize
+    FailedAttempts = count(),
+    Tables = make_set(object_name_s),
+    Queries = make_set(substring(statement_s, 0, 100))
+    by User = database_principal_name_s, ClientIP = client_ip_s, bin(TimeGenerated, 5m)
+| where FailedAttempts > 3
+| project
+    TimeGenerated,
+    User,
+    ClientIP,
+    FailedAttempts,
+    Tables,
+    AlertSeverity = "High",
+    AlertTitle = "Multiple failed database access attempts"
+
+// ============================================
+// ALERT 6: MASS DATA EXPORT
+// ============================================
+// Trigger: Large number of SELECT queries in short time
+// Severity: High
+// RGPD: Article 9 - Data breach detection
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where action_name_s == "SELECT"
+| where TimeGenerated > ago(5m)
+| summarize
+    QueryCount = count(),
+    Tables = make_set(object_name_s)
+    by User = database_principal_name_s, ClientIP = client_ip_s, bin(TimeGenerated, 5m)
+| where QueryCount > 100  // More than 100 SELECT queries in 5 minutes
+| project
+    TimeGenerated,
+    User,
+    ClientIP,
+    QueryCount,
+    Tables,
+    AlertSeverity = "High",
+    AlertTitle = "Potential mass data export detected"
+
+// ============================================
+// ALERT 7: APPLICATION ERROR SPIKE
+// ============================================
+// Trigger: HTTP 500 errors increased significantly
+// Severity: Medium
+// HDS: Article 8.1 - Service availability
+
+AppServiceHTTPLogs
+| where TimeGenerated > ago(5m)
+| where ScStatus >= 500
+| summarize
+    ErrorCount = count(),
+    UniqueIPs = dcount(CIp),
+    ErrorPages = make_set(CsUriStem)
+    by bin(TimeGenerated, 1m)
+| where ErrorCount > 10  // More than 10 errors per minute
+| project
+    TimeGenerated,
+    ErrorCount,
+    UniqueIPs,
+    ErrorPages,
+    AlertSeverity = "Medium",
+    AlertTitle = "Application error spike detected"
+
+// ============================================
+// ALERT 8: HEALTH CHECK FAILURE
+// ============================================
+// Trigger: Health endpoint returning errors
+// Severity: High
+// HDS: Article 8.1 - Service monitoring
+
+AppServiceHTTPLogs
+| where TimeGenerated > ago(5m)
+| where CsUriStem == "/health"
+| where ScStatus != 200
+| summarize
+    FailureCount = count(),
+    StatusCodes = make_set(ScStatus)
+    by bin(TimeGenerated, 1m)
+| where FailureCount > 3
+| project
+    TimeGenerated,
+    FailureCount,
+    StatusCodes,
+    AlertSeverity = "High",
+    AlertTitle = "Health check endpoint failing"
+
+// ============================================
+// ALERT 9: TLS/SSL CERTIFICATE EXPIRATION
+// ============================================
+// Trigger: Certificate expiring within 30 days
+// Severity: Warning
+// HDS: Article 6.1 - Certificate management
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where OperationName == "CertificateNearExpiry"
+| where TimeGenerated > ago(1d)
+| project
+    TimeGenerated,
+    CertificateName = properties_objectName_s,
+    ExpiryDate = properties_exp_t,
+    DaysUntilExpiry = datetime_diff('day', todatetime(properties_exp_t), now()),
+    AlertSeverity = "Warning",
+    AlertTitle = "SSL/TLS certificate expiring soon"
+
+// ============================================
+// ALERT 10: SECRET EXPIRATION
+// ============================================
+// Trigger: Secret expiring within 7 days
+// Severity: Warning
+// HDS: Article 9.1 - Secret rotation
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.KEYVAULT"
+| where OperationName == "SecretNearExpiry"
+| where TimeGenerated > ago(1d)
+| project
+    TimeGenerated,
+    SecretName = properties_objectName_s,
+    ExpiryDate = properties_exp_t,
+    DaysUntilExpiry = datetime_diff('day', todatetime(properties_exp_t), now()),
+    AlertSeverity = "Warning",
+    AlertTitle = "Secret expiring soon - rotation required"
+
+// ============================================
+// ALERT 11: DEPLOYMENT FAILURE
+// ============================================
+// Trigger: Blue/Green deployment failed
+// Severity: High
+// HDS: Article 8.1 - Change management
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.WEB"
+| where Category == "AppServiceAuditLogs"
+| where OperationName contains "Swap"
+| where ResultSignature != "OK"
+| where TimeGenerated > ago(5m)
+| project
+    TimeGenerated,
+    OperationName,
+    User = identity_claim_upn_s,
+    Error = ResultDescription,
+    AlertSeverity = "High",
+    AlertTitle = "Deployment swap operation failed"
+
+// ============================================
+// ALERT 12: UNUSUAL TIME ACCESS
+// ============================================
+// Trigger: Access outside business hours (18:00-08:00 UTC)
+// Severity: Low
+// HDS: Article 7.2 - Behavioral analysis
+
+AzureDiagnostics
+| where TimeGenerated > ago(5m)
+| extend Hour = hourofday(TimeGenerated)
+| where Hour < 8 or Hour >= 18  // Outside 08:00-18:00 UTC
+| where ResourceProvider in ("MICROSOFT.KEYVAULT", "MICROSOFT.SQL")
+| summarize
+    OperationCount = count(),
+    Operations = make_set(OperationName)
+    by User = coalesce(identity_claim_upn_s, database_principal_name_s), CallerIPAddress, bin(TimeGenerated, 5m)
+| where OperationCount > 5
+| project
+    TimeGenerated,
+    User,
+    CallerIPAddress,
+    OperationCount,
+    Operations,
+    AlertSeverity = "Low",
+    AlertTitle = "Unusual access time detected (outside business hours)"
+
+// ============================================
+// ALERT 13: DATA MODIFICATION SPIKE
+// ============================================
+// Trigger: High number of UPDATE/DELETE operations
+// Severity: Medium
+// RGPD: Article 9 - Data integrity monitoring
+
+AzureDiagnostics
+| where ResourceProvider == "MICROSOFT.SQL"
+| where Category == "SQLSecurityAuditEvents"
+| where action_name_s in ("UPDATE", "DELETE")
+| where TimeGenerated > ago(5m)
+| summarize
+    ModificationCount = count(),
+    Tables = make_set(object_name_s)
+    by User = database_principal_name_s, ClientIP = client_ip_s, bin(TimeGenerated, 5m)
+| where ModificationCount > 50  // More than 50 modifications in 5 minutes
+| project
+    TimeGenerated,
+    User,
+    ClientIP,
+    ModificationCount,
+    Tables,
+    AlertSeverity = "Medium",
+    AlertTitle = "Unusual data modification activity detected"
+
+// ============================================
+// ALERT 14: LOG ANALYTICS INGESTION FAILURE
+// ============================================
+// Trigger: No logs received in last 10 minutes
+// Severity: Critical
+// HDS: Article 4.1 - Audit trail integrity
+
+Heartbeat
+| summarize LastHeartbeat = max(TimeGenerated) by Computer
+| where LastHeartbeat < ago(10m)
+| project
+    Computer,
+    LastHeartbeat,
+    MinutesSinceLastLog = datetime_diff('minute', now(), LastHeartbeat),
+    AlertSeverity = "Critical",
+    AlertTitle = "Log Analytics ingestion failure - no recent logs"
+
+// ============================================
+// ALERT 15: DISK SPACE CRITICAL
+// ============================================
+// Trigger: Disk space < 10%
+// Severity: High
+// HDS: Article 8.1 - Infrastructure monitoring
+
+Perf
+| where ObjectName == "LogicalDisk"
+| where CounterName == "% Free Space"
+| where TimeGenerated > ago(5m)
+| where CounterValue < 10  // Less than 10% free
+| project
+    TimeGenerated,
+    Computer,
+    InstanceName,
+    FreeSpacePercent = CounterValue,
+    AlertSeverity = "High",
+    AlertTitle = "Critical disk space - less than 10% free"

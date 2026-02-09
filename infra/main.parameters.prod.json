@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "medsecure-prod"
+    },
+    "location": {
+      "value": "francecentral"
+    },
+    "principalId": {
+      "value": ""
+    },
+    "sqlAdminPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscription-id}/resourceGroups/rg-medsecure-prod/providers/Microsoft.KeyVault/vaults/kv-medsecure-prod"
+        },
+        "secretName": "sqlAdminPassword"
+      }
+    },
+    "appUserPassword": {
+      "reference": {
+        "keyVault": {
+          "id": "/subscriptions/{subscription-id}/resourceGroups/rg-medsecure-prod/providers/Microsoft.KeyVault/vaults/kv-medsecure-prod"
+        },
+        "secretName": "appUserPassword"
+      }
+    },
+    "resourceGroupName": {
+      "value": "rg-medsecure-prod"
+    },
+    "webServiceName": {
+      "value": "app-medsecure-web-prod"
+    },
+    "catalogDatabaseName": {
+      "value": "catalogDatabase"
+    },
+    "catalogDatabaseServerName": {
+      "value": "sql-medsecure-catalog-prod"
+    },
+    "identityDatabaseName": {
+      "value": "identityDatabase"
+    },
+    "identityDatabaseServerName": {
+      "value": "sql-medsecure-identity-prod"
+    },
+    "appServicePlanName": {
+      "value": "plan-medsecure-prod"
+    },
+    "keyVaultName": {
+      "value": "kv-medsecure-prod"
+    },
+    "logAnalyticsName": {
+      "value": "log-medsecure-prod"
+    },
+    "applicationInsightsName": {
+      "value": "appi-medsecure-prod"
+    },
+    "containerRegistryName": {
+      "value": "crmedsecureprod"
+    }
+  }
+}

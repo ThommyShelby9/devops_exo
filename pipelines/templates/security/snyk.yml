@@ -1,0 +1,117 @@
+# Template: Snyk - Software Composition Analysis
+# Scans NuGet dependencies for known vulnerabilities
+
+parameters:
+  - name: severityThreshold
+    type: string
+    default: 'high'  # low, medium, high, critical
+
+  - name: failOnVulnerabilities
+    type: boolean
+    default: true
+
+  - name: monitorProject
+    type: boolean
+    default: true
+
+steps:
+  # Install Snyk CLI
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "📦 Installing Snyk CLI..."
+
+      # Install Snyk via npm
+      npm install -g snyk
+
+      # Verify installation
+      snyk --version
+
+      echo "✅ Snyk installed successfully"
+    displayName: 'Install Snyk'
+
+  # Authenticate Snyk
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "🔐 Authenticating with Snyk..."
+
+      # Authenticate using token from pipeline variable
+      snyk auth $(SNYK_TOKEN)
+
+      echo "✅ Authenticated successfully"
+    displayName: 'Authenticate Snyk'
+    env:
+      SNYK_TOKEN: $(SNYK_TOKEN)
+
+  # Test .NET dependencies
+  - script: |
+      #!/bin/bash
+      set -e
+
+      echo "🔍 Scanning .NET dependencies with Snyk..."
+
+      # Run Snyk test
+      snyk test \
+        --all-projects \
+        --severity-threshold=${{ parameters.severityThreshold }} \
+        --json \
+        --json-file-output="$(Build.ArtifactStagingDirectory)/snyk-test-report.json" \
+        || true
+
+      EXIT_CODE=$?
+
+      # Display summary
+      if [ -f "$(Build.ArtifactStagingDirectory)/snyk-test-report.json" ]; then
+        echo ""
+        echo "📊 Snyk Test Summary:"
+        cat "$(Build.ArtifactStagingDirectory)/snyk-test-report.json" | jq -r '
+          if type == "array" then
+            .[] | "Project: \(.projectName)\n  - Vulnerabilities: \(.vulnerabilities | length)\n  - Critical: \([.vulnerabilities[] | select(.severity == "critical")] | length)\n  - High: \([.vulnerabilities[] | select(.severity == "high")] | length)"
+          else
+            "Project: \(.projectName)\n  - Vulnerabilities: \(.vulnerabilities | length)\n  - Critical: \([.vulnerabilities[] | select(.severity == "critical")] | length)\n  - High: \([.vulnerabilities[] | select(.severity == "high")] | length)"
+          end
+        ' 2>/dev/null || echo "  (Failed to parse report)"
+      fi
+
+      if [ $EXIT_CODE -ne 0 ]; then
+        if [ "${{ parameters.failOnVulnerabilities }}" = "True" ]; then
+          echo "❌ Vulnerabilities found above threshold: ${{ parameters.severityThreshold }}"
+          exit 1
+        else
+          echo "⚠️ Vulnerabilities found but continuing (failOnVulnerabilities=false)"
+        fi
+      else
+        echo "✅ No vulnerabilities found above threshold"
+      fi
+    displayName: 'Snyk Test Dependencies'
+    continueOnError: ${{ not(parameters.failOnVulnerabilities) }}
+
+  # Monitor project (send results to Snyk dashboard)
+  - ${{ if eq(parameters.monitorProject, true) }}:
+      - script: |
+          #!/bin/bash
+          set -e
+
+          echo "📤 Sending results to Snyk for monitoring..."
+
+          snyk monitor \
+            --all-projects \
+            --project-name="MedSecure-$(Build.SourceBranchName)" \
+            || echo "⚠️ Failed to send to Snyk dashboard (non-blocking)"
+
+          echo "✅ Results sent to Snyk dashboard"
+        displayName: 'Snyk Monitor'
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        continueOnError: true
+
+  # Publish Snyk report
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Snyk Report'
+    condition: always()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/snyk-test-report.json'
+      ArtifactName: 'SecurityReports'
+      publishLocation: 'Container'

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone:*)",
+      "Bash(\"O:\\\\Projets\\\\Formation\\\\cas2\\\\.env.example\" << 'EOF'\n# ============================================\n# MedSecure - Variables d'environnement LOCAL\n# ============================================\n# Copiez ce fichier vers .env et ajustez les valeurs\n\n# Base de données SQL Server\nSQL_SERVER_HOST=localhost\nSQL_SERVER_PORT=1433\nSQL_SERVER_USER=sa\nSQL_SERVER_PASSWORD=MedSecure2024!\nSQL_DATABASE_CATALOG=MedSecureDB\nSQL_DATABASE_IDENTITY=MedSecureIdentity\n\n# Redis Cache\nREDIS_HOST=localhost\nREDIS_PORT=6379\n\n# Email \\(MailHog\\)\nSMTP_HOST=localhost\nSMTP_PORT=1025\nSMTP_FROM_EMAIL=noreply@medsecure.local\n\n# Application\nASPNETCORE_ENVIRONMENT=Development\nENABLE_SWAGGER=true\nEOF)",
+      "Bash(\"O:\\\\Projets\\\\Formation\\\\cas2\\\\.gitignore\" << 'EOF'\n\n# ============================================\n# MedSecure Local Development\n# ============================================\n.env\nappsettings.Development.json\nappsettings.Local.json\n*.Development.json\n\n# Docker volumes\ndocker-compose.override.yml\n\n# Logs\nLogs/\n*.log\nEOF)",
+      "Bash(ls:*)"
+    ]
+  }
+}
