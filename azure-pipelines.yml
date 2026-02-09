@@ -83,7 +83,7 @@ stages:
           - template: pipelines/templates/dotnet-test.yml
             parameters:
               buildConfiguration: '$(buildConfiguration)'
-              coverageThreshold: $(coverageThreshold)
+              coverageThreshold: 80
 
           - task: DotNetCoreCLI@2
             displayName: 'Publish Web API'
