@@ -1,0 +1,21 @@
+# ============================================
+# Gitleaks Ignore File
+# False positives for secret detection
+# ============================================
+
+# Exemples de mots de passe de test/documentation (pas de vrais secrets)
+MedSecure2024!
+Pass@word1
+
+# Connection strings de développement local
+Server=localhost,1433;Database=MedSecureDB;User Id=sa;Password=MedSecure2024!
+
+# Clés de test/exemple dans la documentation
+sk-1234567890abcdef
+your-super-secret-key-change-this-in-production
+
+# InstrumentationKey vide (placeholder)
+InstrumentationKey=xxxxx
+
+# SHA de commits Git (faux positifs)
+# Ajoutez les SHA spécifiques si nécessaire
