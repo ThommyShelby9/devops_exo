@@ -160,7 +160,7 @@ stages:
           - template: pipelines/templates/security/owasp-dependency-check.yml
             parameters:
               scanPath: '.'
-              cvssThreshold: 7.0
+              cvssThreshold: 7
               failOnCvss: true
 
   # ============================================
